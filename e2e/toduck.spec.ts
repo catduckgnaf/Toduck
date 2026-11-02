@@ -264,6 +264,30 @@ test("self-host server serves a page whose inline scripts run", async ({ page },
   }
 });
 
+test("boot watchdog offers recovery when the app bundle cannot load", async ({ browser }) => {
+  // The served page is a text-free loading skeleton until the bundle runs,
+  // so a bundle that never executes (blocked, stale, mismatched with the
+  // cached shell) used to leave a frozen skeleton forever. Block every
+  // script the dev server would load the app from; the inline watchdog in
+  // the root shell is not a module and must still offer recovery.
+  // A fresh context is required: the shared page has already registered
+  // the service worker, which would serve the app from cache instead.
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.route("**/src/**", (route) => route.abort());
+    await page.route("**/node_modules/.vite/**", (route) => route.abort());
+    await page.route("**/@vite/client", (route) => route.abort());
+    await page.route("**/@react-refresh", (route) => route.abort());
+    await page.goto("/");
+    await expect(page.getByText("Toduck is stuck loading")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "Reload", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Clear saved app data and reload" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
 test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }, testInfo) => {
   const nav = page.getByRole("navigation", { name: "Views" });
   if (testInfo.project.name === "desktop-chromium") {
