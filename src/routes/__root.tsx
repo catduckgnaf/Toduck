@@ -8,7 +8,8 @@ const APP_NAME = "Toduck";
 /**
  * Boot watchdog, inlined in the shell like the service-worker registration
  * below. The served page is a loading skeleton until the app bundle loads
- * and Home reports a finished boot by setting `window.__toduckBooted`. If
+ * and a route reports a finished boot by setting `window.__toduckBooted`
+ * (Home once its data is ready, the login page as soon as it renders). If
  * that never happens — the bundle was blocked or served stale, hydration
  * threw before Home mounted, a cached service-worker shell outlived its
  * assets — the skeleton would otherwise sit there forever with no error
@@ -21,10 +22,16 @@ const APP_NAME = "Toduck";
 const BOOT_WATCHDOG_SCRIPT = `(function () {
   var elapsed = 0;
   var timer = setInterval(function () {
+    if (window.__toduckBooted) {
+      // Startup finished — possibly after the panel below already appeared
+      // on a slow load — so withdraw the panel and stop watching.
+      clearInterval(timer);
+      var stale = document.getElementById("toduck-boot-recovery");
+      if (stale) stale.remove();
+      return;
+    }
     elapsed += 500;
-    if (window.__toduckBooted) { clearInterval(timer); return; }
     if (elapsed < 9000) return;
-    clearInterval(timer);
     if (!document.body || document.getElementById("toduck-boot-recovery")) return;
     var box = document.createElement("div");
     box.id = "toduck-boot-recovery";

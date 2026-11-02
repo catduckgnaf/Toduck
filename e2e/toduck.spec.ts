@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test, type Page } from "playwright/test";
+import { expect, test, type Page, type Route } from "playwright/test";
 
 /** The nav lives in the sidebar: pinned open on desktop, a drawer on mobile. */
 async function openSidebarIfNeeded(page: Page) {
@@ -283,6 +283,67 @@ test("boot watchdog offers recovery when the app bundle cannot load", async ({ b
     await expect(page.getByText("Toduck is stuck loading")).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("button", { name: "Reload", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Clear saved app data and reload" })).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});
+
+test("boot watchdog withdraws its panel when startup finishes late", async ({ browser }) => {
+  // The panel must not outlive the problem: hold every bundle request
+  // until just past the watchdog's 9-second deadline, so the panel
+  // appears, then let the app finish starting — the panel has to go
+  // away again instead of claiming a working app is stuck.
+  test.setTimeout(90_000);
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    // Park every bundle script on a gate this test controls. A timed
+    // release races the watchdog: the panel's lifetime between "9s
+    // deadline crossed" and "boot flag set" can be under a second on a
+    // busy main thread, too short to observe reliably. Gated instead,
+    // the panel must appear while the bundle is parked, and must be
+    // withdrawn once the gate opens and startup finishes. Stylesheets
+    // are NOT parked: a script cannot execute while an earlier
+    // stylesheet is still loading, so holding CSS would stop the
+    // inline watchdog itself from ever running.
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve;
+    });
+    const delay = async (route: Route) => {
+      if (route.request().resourceType() === "stylesheet") {
+        await route.continue();
+        return;
+      }
+      await gate;
+      await route.continue();
+    };
+    await page.route("**/src/**", delay);
+    await page.route("**/node_modules/.vite/**", delay);
+    await page.route("**/@vite/client", delay);
+    await page.route("**/@react-refresh", delay);
+    await page.goto("/", { waitUntil: "commit" });
+    await expect(page.getByText("Toduck is stuck loading")).toBeVisible({ timeout: 30_000 });
+    openGate();
+    await expect(page.getByText("Toduck is stuck loading")).toBeHidden({ timeout: 30_000 });
+  } finally {
+    await context.close();
+  }
+});
+
+test("boot watchdog stays quiet on the login route", async ({ browser }) => {
+  // The login page never mounts Home, the only route that used to set
+  // the boot flag, so the watchdog offered its recovery panel over a
+  // healthy login page after 9 seconds. Login rendering now counts as
+  // a finished boot; no panel may appear.
+  test.setTimeout(60_000);
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto("/login");
+    await expect(page.getByText("Auth is off.")).toBeVisible();
+    await page.waitForTimeout(10_500);
+    await expect(page.getByText("Toduck is stuck loading")).toHaveCount(0);
   } finally {
     await context.close();
   }
