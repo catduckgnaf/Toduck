@@ -17,6 +17,15 @@ function Home() {
     void bootToduck();
   }, []);
 
+  // Tell the boot watchdog in __root.tsx that the app finished starting,
+  // so it does not offer its recovery panel over a healthy slow load.
+  const booted = mounted && hydrated && !(authEnabled && isPending);
+  useEffect(() => {
+    if (booted) {
+      (window as unknown as { __toduckBooted?: boolean }).__toduckBooted = true;
+    }
+  }, [booted]);
+
   if (!mounted || !hydrated || (authEnabled && isPending)) return <ToduckShell />;
   if (authEnabled && !user) return <Navigate to="/login" />;
   return <ToduckScreen />;

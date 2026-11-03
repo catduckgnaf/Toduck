@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { authClient, authEnabled } from "@/lib/auth/client";
 import { Button } from "@/components/toduck/ui";
 
@@ -12,6 +12,14 @@ function Login() {
   const [mode, setMode] = useState<"in" | "up">("in");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Rendering this page means the app bundle ran, so tell the boot
+  // watchdog in __root.tsx the app started. Home is the only route that
+  // used to set the flag, so without this the watchdog would offer its
+  // recovery panel over a healthy login page after 9 seconds.
+  useEffect(() => {
+    (window as unknown as { __toduckBooted?: boolean }).__toduckBooted = true;
+  }, []);
 
   if (!authEnabled) {
     return (

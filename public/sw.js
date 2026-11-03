@@ -1,4 +1,7 @@
-const CACHE = "toduck-v1";
+// Bump this name on any release that must not inherit the previous
+// shell/asset cache: activate deletes every cache with a different name,
+// so a bump is a clean break from a stale or mismatched cached shell.
+const CACHE = "toduck-v2";
 const SHELL = ["/", "/logo.png", "/__grok/icon-180.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
