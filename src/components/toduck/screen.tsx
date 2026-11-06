@@ -42,21 +42,6 @@ const VIEWS: { id: ViewId; label: string }[] = [
   { id: "projects", label: "Projects" },
 ];
 
-const SIDEBAR_STORAGE_KEY = "toduck-sidebar-open";
-// Older installs stored the open/closed flag under this key.
-const LEGACY_SIDEBAR_STORAGE_KEY = "cat2duck-sidebar-open";
-
-function initialSidebarOpen(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    const stored =
-      window.localStorage.getItem(SIDEBAR_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY);
-    return stored === "1";
-  } catch {
-    return false;
-  }
-}
-
 export function ToduckShell() {
   return (
     <div className="mx-auto flex h-dvh w-full max-w-6xl flex-col bg-paper px-5 pt-8">
@@ -74,7 +59,7 @@ export function ToduckScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [projectsManageOpen, setProjectsManageOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState<boolean>(initialSidebarOpen);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     const unsub = bindSync();
@@ -117,25 +102,13 @@ export function ToduckScreen() {
   const selectedProject = state.projectFilter ? projects.find((p) => p.id === state.projectFilter) : undefined;
 
   function toggleSidebar() {
-    setSidebarOpen((open) => {
-      const next = !open;
-      try {
-        window.localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0");
-      } catch {
-        // Persistence is a nicety; the toggle still works without it.
-      }
-      return next;
-    });
-  }
-
-  function closeSidebarOnNarrow() {
-    if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
+    setSidebarOpen((open) => !open);
   }
 
   function navigate(view: ViewId) {
     if (view === "projects") state.setProjectFilter(null);
     state.setView(view);
-    closeSidebarOnNarrow();
+    setSidebarOpen(false);
   }
 
   function renderGroups() {
@@ -167,17 +140,38 @@ export function ToduckScreen() {
   }
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden bg-paper text-ink">
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-paper text-ink">
+      <header className="shrink-0 px-3 pt-3 md:px-5 md:pt-5">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="grid size-10 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+            aria-label="Toggle navigation"
+            aria-expanded={sidebarOpen}
+            onClick={toggleSidebar}
+          >
+            <Menu className="size-5" />
+          </button>
+          <div className="min-w-0">
+            <h1 className="font-display text-2xl text-ink md:text-4xl">{header.title}</h1>
+            <p className="text-sm text-muted">
+              {header.sub}
+              <span className="tabular-nums"> · {headerCount} {countWord}</span>
+            </p>
+          </div>
+        </div>
+      </header>
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       {sidebarOpen ? (
         <button
           type="button"
           aria-label="Close navigation"
-          className="fixed inset-0 z-30 bg-black/50"
+          className="absolute inset-0 z-30 bg-black/50"
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
       {sidebarOpen ? (
-        <aside className="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r border-line bg-paper shadow-2xl" aria-label="Sidebar">
+        <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r border-line bg-paper shadow-2xl" aria-label="Sidebar">
           <div className="flex items-center gap-3 px-4 pt-5">
             <img src="/logo.png" alt="" className="size-11 shrink-0 rounded-xl" />
             <div className="min-w-0 flex-1">
@@ -292,28 +286,6 @@ export function ToduckScreen() {
           </div>
         </aside>
       ) : null}
-
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="shrink-0 px-3 pt-3 md:px-5 md:pt-5">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="grid size-10 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
-              aria-label="Toggle navigation"
-              aria-expanded={sidebarOpen}
-              onClick={toggleSidebar}
-            >
-              <Menu className="size-5" />
-            </button>
-            <div className="min-w-0">
-              <h1 className="font-display text-2xl text-ink md:text-4xl">{header.title}</h1>
-              <p className="text-sm text-muted">
-                {header.sub}
-                <span className="tabular-nums"> · {headerCount} {countWord}</span>
-              </p>
-            </div>
-          </div>
-        </header>
 
         {state.view === "day" ? (
           <WeekStrip
@@ -638,25 +610,18 @@ function TaskRow({
             <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
           </button>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
-            {category ? (
-              <span
-                className="max-w-[8rem] truncate rounded-full px-1.5 py-0.5 text-[11px] font-medium leading-none"
-                style={{ color: categoryTone(category), background: "rgb(255 255 255 / 0.06)" }}
-              >
-                {category}
-              </span>
-            ) : (
-              <button
-                type="button"
-                className="text-[11px] text-faint"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setCategoryOpen(true);
-                }}
-              >
-                Add tag
-              </button>
-            )}
+            <button
+              type="button"
+              className={category ? "max-w-[8rem] truncate rounded-full px-1.5 py-0.5 text-[11px] font-medium leading-none" : "shrink-0 text-[11px] text-faint"}
+              style={category ? { color: categoryTone(category), background: "rgb(255 255 255 / 0.06)" } : undefined}
+              aria-label={`Change tag for ${task.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setCategoryOpen(true);
+              }}
+            >
+              {category ?? "Add tag"}
+            </button>
             {project ? <span className="truncate text-[11px] text-muted">{project}</span> : null}
             {repeat ? <span className="truncate text-[11px] text-muted">{repeat}</span> : null}
           </span>

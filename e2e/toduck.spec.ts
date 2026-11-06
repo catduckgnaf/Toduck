@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, type Page, type Route } from "playwright/test";
 
-/** The nav lives in the sidebar: pinned open on desktop, a drawer on mobile. */
+/** The nav is an overlay under the header. Open it when it is closed. */
 async function openSidebarIfNeeded(page: Page) {
   const nav = page.getByRole("navigation", { name: "Views" });
   if (!(await nav.isVisible().catch(() => false))) {
@@ -213,7 +213,7 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(page.getByText(/Moved to/)).toBeVisible();
 
   // The category can be set from the row, without opening the details.
-  await quickRow.locator('button[aria-label^="Change category"]:visible').click();
+  await quickRow.locator('button[aria-label^="Change tag"]:visible').click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "Home", exact: true }).click();
