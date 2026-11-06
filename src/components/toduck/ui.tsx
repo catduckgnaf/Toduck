@@ -118,13 +118,12 @@ export function DateChooser({
   const today = todayKey();
   const base = date ?? today;
   const [calendarOpen, setCalendarOpen] = useState(calendarDefaultOpen);
-  const options: { label: string; value: string | null }[] = [
+  const options: { label: string; value: string }[] = [
     { label: "Today", value: today },
     { label: "Tomorrow", value: addDays(today, 1) },
     { label: "This weekend", value: upcomingWeekend(today) },
     { label: "Next week", value: addDays(base, 7) },
     { label: "In 3 days", value: addDays(today, 3) },
-    { label: "No date", value: null },
   ];
 
   return (
@@ -156,7 +155,9 @@ export function DateChooser({
             weekStartsOn={1}
             selected={date ? parseKey(date) : undefined}
             defaultMonth={date ? parseKey(date) : parseKey(today)}
-            onSelect={(next) => onChange(next ? toLocalKey(next) : null)}
+            onSelect={(next) => {
+              if (next) onChange(toLocalKey(next));
+            }}
           />
         </div>
       ) : null}
@@ -265,7 +266,7 @@ export function RepeatChooser({
         {rule.kind === "none"
           ? "Checking this off finishes it."
           : next
-            ? `After this one, next is ${formatGroupLabel(next, todayKey())}. Notes and category stay.`
+            ? `After this one, next is ${formatGroupLabel(next, todayKey())}. Notes and the tag stay.`
             : "Set a date so the next one has somewhere to land."}{" "}
         {rule.kind === "none" ? null : <span className="text-ink">{repeatLabel(rule)}</span>}
       </p>
@@ -315,8 +316,8 @@ export function CategoryPicker({
           className="field"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="New category"
-          aria-label="New category"
+          placeholder="New tag"
+          aria-label="New tag"
           maxLength={40}
         />
         <Button type="submit" variant="primary" disabled={!draft.trim()}>

@@ -166,8 +166,8 @@ export function CategoriesDialog({ onClose }: { onClose: () => void }) {
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      title="Categories"
-      description="A toduck sits in one category. Filter the list with the chips in the sidebar."
+      title="Tags"
+      description="A toduck has one tag. Filter the list with the chips in the sidebar."
     >
       <ul className="space-y-2">
         {items.map((category) => (
@@ -179,7 +179,7 @@ export function CategoriesDialog({ onClose }: { onClose: () => void }) {
           />
         ))}
       </ul>
-      {items.length === 0 ? <p className="text-sm text-muted">No categories yet.</p> : null}
+      {items.length === 0 ? <p className="text-sm text-muted">No tags yet.</p> : null}
       <form
         className="mt-4 flex gap-2"
         onSubmit={(event) => {
@@ -191,8 +191,8 @@ export function CategoriesDialog({ onClose }: { onClose: () => void }) {
           className="field"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="New category"
-          aria-label="New category"
+          placeholder="New tag"
+          aria-label="New tag"
           maxLength={40}
         />
         <Button type="submit" variant="primary" disabled={!draft.trim()}>
@@ -218,7 +218,7 @@ export function ProjectsDialog({ onClose }: { onClose: () => void }) {
         if (!open) onClose();
       }}
       title="Projects"
-      description="A toduck can belong to one project, alongside its category. Removing a project keeps its toducks."
+      description="A toduck can belong to one project, alongside its tag. Removing a project keeps its toducks."
     >
       <ul className="space-y-2">
         {items.map((project) => (

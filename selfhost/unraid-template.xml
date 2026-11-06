@@ -9,7 +9,7 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/catduckgnaf/Toduck/issues</Support>
   <Project>https://github.com/catduckgnaf/Toduck</Project>
-  <Overview>Toduck unified task manager and synchronization server. Serves the responsive Web UI and /v1/state sync API from a single container.</Overview>
+  <Overview>Toduck is a local-first task inbox. Every task has a date. Due dates sit on the right and are colored by horizon: overdue, tomorrow, this week, next week, next month, and further out. The Web UI is a compact inbox and an installable PWA, with tags, projects, repeating tasks, search, and import/export. This container serves the Web UI and the /v1/state sync API from one image. The auth token is required and must be at least 32 characters. State is stored as /data/state.json. Use latest for releases. develop and nightly are optional floating tags that move only to a Quality-green main commit. Community Applications uses the copy in catduck-unraid-templates.</Overview>
   <Category>Productivity:Tools:</Category>
   <WebUI>http://[IP]:[PORT:8787]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/catduckgnaf/Toduck/main/selfhost/unraid-template.xml</TemplateURL>

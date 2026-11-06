@@ -4,6 +4,7 @@ import {
   addDays,
   buildWorkflow,
   completionPatch,
+  dateHorizon,
   makeSeed,
   nextOccurrence,
   shownDate,
@@ -175,7 +176,7 @@ describe("seed", () => {
     const seed = makeSeed(today);
     assert.equal(seed.categories.length, 4);
     assert.ok(seed.tasks.some((t) => t.date === addDays(today, -2) && t.notes.includes("confirmation")));
-    assert.ok(seed.tasks.some((t) => t.date === null));
+    assert.ok(seed.tasks.every((t) => t.date));
     assert.ok(seed.tasks.every((t) => t.categoryId));
   });
 });
@@ -198,7 +199,7 @@ describe("all, workflow, and projects views", () => {
     { ...base, id: "overdue", title: "Overdue one", date: "2026-09-24", done: false },
     { ...base, id: "today", title: "Today one", date: "2026-09-25", done: false, projectId: "house" },
     { ...base, id: "upcoming", title: "Upcoming one", date: "2026-09-27", done: false },
-    { ...base, id: "later", title: "Later one", date: null, done: false },
+    { ...base, id: "later", title: "Later one", date: "2026-10-20", done: false },
     { ...base, id: "done", title: "Done one", date: "2026-09-25", done: true, completedAt: "2026-09-25T10:00:00Z", projectId: "house" },
     { ...base, id: "gone", title: "Deleted one", date: "2026-09-25", done: false, deleted: true },
   ];
@@ -217,13 +218,14 @@ describe("all, workflow, and projects views", () => {
     assert.equal(workflowColumnFor(tasks[0]!, today), "overdue");
     assert.equal(workflowColumnFor(tasks[1]!, today), "today");
     assert.equal(workflowColumnFor(tasks[2]!, today), "upcoming");
-    assert.equal(workflowColumnFor(tasks[3]!, today), "later");
+    assert.equal(workflowColumnFor(tasks[3]!, today), "upcoming");
     assert.equal(workflowColumnFor(tasks[4]!, today), "done");
     const columns = buildWorkflow(tasks, [], today, today, refine, projects);
-    assert.deepEqual(columns.map((c) => c.id), ["overdue", "today", "upcoming", "later", "done"]);
+    assert.deepEqual(columns.map((c) => c.id), ["overdue", "today", "upcoming", "done"]);
     const placed = columns.flatMap((c) => c.tasks.map((t) => t.id));
     assert.deepEqual(placed.sort(), ["done", "later", "overdue", "today", "upcoming"]);
-    for (const column of columns) assert.equal(column.tasks.length, 1);
+    assert.equal(columns.find((c) => c.id === "upcoming")!.tasks.length, 2);
+    assert.equal(columns.find((c) => c.id === "today")!.tasks.length, 1);
   });
 
   it("filters by project across views, and matches project names in search", () => {
@@ -231,5 +233,20 @@ describe("all, workflow, and projects views", () => {
     assert.deepEqual(inProject.map((t) => t.id).sort(), ["done", "today"]);
     const bySearch = visibleTasks(tasks, [], "all", today, today, { ...refine, query: "house" }, projects);
     assert.deepEqual(bySearch.map((t) => t.id).sort(), ["done", "today"]);
+  });
+});
+
+describe("date horizons", () => {
+  const today = "2026-11-06";
+  it("colors overdue, tomorrow, this week, next week, next month, and future", () => {
+    assert.equal(dateHorizon("2026-11-05", today), "overdue");
+    assert.equal(dateHorizon("2026-11-07", today), "tomorrow");
+    assert.equal(dateHorizon("2026-11-06", today), "this-week");
+    assert.equal(dateHorizon("2026-11-08", today), "this-week");
+    assert.equal(dateHorizon("2026-11-09", today), "next-week");
+    assert.equal(dateHorizon("2026-11-15", today), "next-week");
+    assert.equal(dateHorizon("2026-11-16", today), "next-month");
+    assert.equal(dateHorizon("2026-12-31", today), "next-month");
+    assert.equal(dateHorizon("2027-01-01", today), "future");
   });
 });

@@ -25,7 +25,7 @@ as below.
   Settings → Users, or `POST /v1/users`) and use that user's personal
   token here. The integration then sees exactly that user's toducks plus
   any shared with them, and toducks it creates are owned by that user.
-  The admin token (`CADENCE_TOKEN`) also works and sees everything.
+  The admin token (`TODUCK_TOKEN`) also works and sees everything.
 
 ## Install
 

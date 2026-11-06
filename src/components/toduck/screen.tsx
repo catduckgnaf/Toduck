@@ -11,16 +11,18 @@ import {
   buildWorkflow,
   categoryName,
   countFor,
+  dateHorizon,
   formatWhen,
   monthDay,
-  notePreview,
   projectName,
   repeatLabel,
+  requireDate,
   shownDate,
   startOfWeek,
   todayKey,
   weekdayName,
   DAY_SHORT,
+  type Horizon,
   type Project,
   type Repeat,
   type Task,
@@ -34,7 +36,6 @@ const VIEWS: { id: ViewId; label: string }[] = [
   { id: "day", label: "Today" },
   { id: "upcoming", label: "Upcoming" },
   { id: "overdue", label: "Overdue" },
-  { id: "later", label: "Later" },
   { id: "repeats", label: "Repeats" },
   { id: "done", label: "Done" },
   { id: "workflow", label: "Workflow" },
@@ -42,20 +43,17 @@ const VIEWS: { id: ViewId; label: string }[] = [
 ];
 
 const SIDEBAR_STORAGE_KEY = "toduck-sidebar-open";
-// Pre-rename key (Cat2Duck → Toduck); read once as a fallback so an
-// existing pinned/collapsed choice survives the rename.
+// Older installs stored the open/closed flag under this key.
 const LEGACY_SIDEBAR_STORAGE_KEY = "cat2duck-sidebar-open";
 
 function initialSidebarOpen(): boolean {
-  if (typeof window === "undefined") return true;
-  // Narrow screens start unpinned; the sidebar is a drawer there.
-  if (window.innerWidth < 768) return false;
+  if (typeof window === "undefined") return false;
   try {
     const stored =
       window.localStorage.getItem(SIDEBAR_STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_SIDEBAR_STORAGE_KEY);
-    return stored === null ? true : stored === "1";
+    return stored === "1";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -147,7 +145,7 @@ export function ToduckScreen() {
     return groups.map((group) => (
       <section key={group.key}>
         {group.label ? (
-          <h2 className={`px-5 font-display text-ink ${state.compact ? "pt-3 text-lg" : "pt-4 text-2xl"} ${group.key === "overdue" ? "text-danger" : ""}`}>
+          <h2 className={`border-l-2 px-4 font-display text-lg ${horizonClass(groupHorizon(group.key, today))} ${state.compact ? "pt-2" : "pt-3"}`}>
             {group.label}
           </h2>
         ) : null}
@@ -159,7 +157,6 @@ export function ToduckScreen() {
               category={categoryName(state.categories, task.categoryId)}
               project={projectName(state.projects, task.projectId)}
               today={today}
-              columns={state.view === "feed"}
               compact={state.compact}
               onOpen={() => setDetailId(task.id)}
             />
@@ -175,12 +172,12 @@ export function ToduckScreen() {
         <button
           type="button"
           aria-label="Close navigation"
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
+          className="fixed inset-0 z-30 bg-black/50"
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
       {sidebarOpen ? (
-        <aside className="fixed inset-y-0 left-0 z-40 flex w-72 shrink-0 flex-col border-r border-line bg-paper md:static md:z-auto" aria-label="Sidebar">
+        <aside className="fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r border-line bg-paper shadow-2xl" aria-label="Sidebar">
           <div className="flex items-center gap-3 px-4 pt-5">
             <img src="/logo.png" alt="" className="size-11 shrink-0 rounded-xl" />
             <div className="min-w-0 flex-1">
@@ -189,7 +186,7 @@ export function ToduckScreen() {
             </div>
             <button
               type="button"
-              className="grid size-11 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink md:hidden"
+              className="grid size-11 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
               aria-label="Close navigation"
               onClick={() => setSidebarOpen(false)}
             >
@@ -275,7 +272,7 @@ export function ToduckScreen() {
 
             <div className="mt-5 flex flex-col gap-2">
               <Button variant="quiet" className="w-full" onClick={() => setCategoriesOpen(true)}>
-                Categories
+                Tags
               </Button>
               <button
                 type="button"
@@ -297,11 +294,11 @@ export function ToduckScreen() {
       ) : null}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="shrink-0 px-5 pt-6">
-          <div className="flex items-start gap-2">
+        <header className="shrink-0 px-3 pt-3 md:px-5 md:pt-5">
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              className="grid size-11 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+              className="grid size-10 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
               aria-label="Toggle navigation"
               aria-expanded={sidebarOpen}
               onClick={toggleSidebar}
@@ -309,8 +306,8 @@ export function ToduckScreen() {
               <Menu className="size-5" />
             </button>
             <div className="min-w-0">
-              <h1 className="font-display text-display text-ink">{header.title}</h1>
-              <p className="mt-1 text-sm text-muted">
+              <h1 className="font-display text-2xl text-ink md:text-4xl">{header.title}</h1>
+              <p className="text-sm text-muted">
                 {header.sub}
                 <span className="tabular-nums"> · {headerCount} {countWord}</span>
               </p>
@@ -366,7 +363,6 @@ export function ToduckScreen() {
                             category={categoryName(state.categories, task.categoryId)}
                             project={projectName(state.projects, task.projectId)}
                             today={today}
-                            columns={false}
                             compact={state.compact}
                             onOpen={() => setDetailId(task.id)}
                           />
@@ -394,7 +390,6 @@ export function ToduckScreen() {
                   <p className="font-display text-2xl text-ink">{selectedProject?.name ?? "Project"}</p>
                 </div>
               ) : null}
-              {state.view === "feed" && groups.length > 0 ? <FeedColumns /> : null}
               {renderGroups()}
             </>
           )}
@@ -502,7 +497,7 @@ function headerCopy(view: ViewId, focus: string, today: string): { title: string
     feed: { title: "Feed", sub: "Every open toduck, each repeat only once" },
     upcoming: { title: "Upcoming", sub: "Dated after today" },
     overdue: { title: "Overdue", sub: "Still open from earlier days" },
-    later: { title: "Later", sub: "No date yet" },
+    later: { title: "Feed", sub: "Every open toduck, each repeat only once" },
     repeats: { title: "Repeats", sub: "Each one shows only its next time" },
     done: { title: "Done", sub: "One-time toducks you finished" },
     workflow: { title: "Workflow", sub: "Toducks in the column their date puts them in" },
@@ -578,31 +573,31 @@ function WeekStrip({
   );
 }
 
-function FeedColumns() {
-  return (
-    <div className="sticky top-0 z-10 hidden border-b border-line bg-paper px-5 py-2 text-xs font-medium tracking-wide text-muted md:grid md:grid-cols-[minmax(0,1fr)_14rem_9rem_8rem_2.75rem] md:gap-3">
-      <span>Toduck</span>
-      <span>Due</span>
-      <span>Category</span>
-      <span>Repeats</span>
-      <span className="sr-only">Done</span>
-    </div>
-  );
+
+const HORIZON_TEXT: Record<Horizon, string> = {
+  overdue: "text-horizon-overdue",
+  tomorrow: "text-horizon-tomorrow",
+  "this-week": "text-horizon-this-week",
+  "next-week": "text-horizon-next-week",
+  "next-month": "text-horizon-next-month",
+  future: "text-horizon-future",
+};
+
+function horizonClass(horizon: Horizon): string {
+  return HORIZON_TEXT[horizon];
 }
 
-const CATEGORY_TONES = ["#d7c4a3", "#9dceb4", "#e0b1a8", "#a9bddb", "#e0d09a", "#cbb4dd"];
-
-function categoryTone(name: string): string {
-  let hash = 0;
-  for (const char of name) hash = (hash + char.charCodeAt(0)) % CATEGORY_TONES.length;
-  return CATEGORY_TONES[hash] ?? CATEGORY_TONES[0];
+function groupHorizon(key: string, today: string): Horizon {
+  if (key === "overdue") return "overdue";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(key)) return dateHorizon(key, today);
+  return "this-week";
 }
+
 function TaskRow({
   task,
   category,
   project,
   today,
-  columns,
   compact,
   onOpen,
 }: {
@@ -610,7 +605,6 @@ function TaskRow({
   category: string | null;
   project: string | null;
   today: string;
-  columns: boolean;
   compact: boolean;
   onOpen: () => void;
 }) {
@@ -620,108 +614,78 @@ function TaskRow({
   const addCategory = useToduck((s) => s.addCategory);
   const allCategories = useToduck((s) => s.categories);
   const [categoryOpen, setCategoryOpen] = useState(false);
-  const when = shownDate(task, today);
-  const preview = notePreview(task.notes);
-  const meta = [category, project, task.repeat.kind !== "none" ? repeatLabel(task.repeat, "short") : null]
-    .filter(Boolean)
-    .join(" · ");
+  const when = requireDate(shownDate(task, today), today);
+  const horizon = dateHorizon(when, today);
+  const repeat = task.repeat.kind === "none" ? null : repeatLabel(task.repeat, "short");
 
   return (
-    <li className={`border-b border-line px-5 ${compact ? "py-1" : "py-2"}`}>
-      <div className={columns ? "md:grid md:grid-cols-[minmax(0,1fr)_14rem_9rem_8rem_2.75rem] md:items-center md:gap-3" : ""}>
-      <div className={columns ? "flex items-center gap-2 md:contents" : "flex items-center gap-2"}>
-        <button type="button" className={`min-w-0 flex-1 text-left ${compact ? "py-1" : "py-2"}`} onClick={onOpen} aria-label={`Details for ${task.title}`}>
-          <span className={`block font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
-          {meta && !columns ? <span className="mt-0.5 block truncate text-sm text-muted">{meta}{when ? ` · ${formatWhen(when, today)}` : ""}</span> : null}
-          {preview && !compact ? <span className="mt-1 block truncate text-sm text-pretty text-muted">{preview}</span> : null}
-        </button>
+    <li className="border-b border-line px-3 md:px-4">
+      <div className="flex items-center gap-2 py-1.5">
         <button
           type="button"
           role="checkbox"
           aria-checked={task.done}
           aria-label={task.repeat.kind === "none" ? `Complete ${task.title}` : `Done. Move ${task.title} to the next time`}
-          className={`grid shrink-0 place-items-center ${compact ? "size-9" : "size-11"}`}
+          className="grid size-9 shrink-0 place-items-center"
           onClick={() => toggleTask(task.id)}
         >
-          <span className={`grid size-5 place-items-center rounded-full border border-ink text-xs text-paper ${task.done ? "bg-ink" : "bg-transparent"}`}>
+          <span className={`grid size-4 place-items-center rounded-full border border-ink text-[10px] text-paper ${task.done ? "bg-ink" : "bg-transparent"}`}>
             {task.done ? "✓" : ""}
           </span>
         </button>
-      </div>
-      {!task.done ? (
-        <div className={`flex items-center gap-1 ${compact ? "pl-9" : "mt-1 pl-12"} ${columns ? "md:mt-0 md:pl-0" : ""}`}>
-          {compact ? null : (
-            <button
-              type="button"
-              className="grid size-11 place-items-center rounded-full text-ink disabled:opacity-40"
-              aria-label="One day earlier"
-              disabled={!when}
-              onClick={() => when && moveTask(task.id, addDays(when, -1))}
-            >
-              <ChevronLeft className="size-5" />
-            </button>
-          )}
-          <div className="relative min-w-0 flex-1">
-            <span
-              aria-hidden="true"
-              className={`pointer-events-none block min-h-11 truncate py-3 text-sm tabular-nums text-muted underline-offset-2 ${when && when < today ? "text-danger" : ""} ${compact ? "text-left" : "text-center"}`}
-            >
-              {when ? formatWhen(when, today) : "No date"}
-            </span>
-            <input
-              type="date"
-              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-              aria-label={when ? `Change date for ${task.title}, currently ${formatWhen(when, today)}` : `Set a date for ${task.title}`}
-              value={when ?? ""}
-              onClick={(event) => {
-                try {
-                  event.currentTarget.showPicker();
-                } catch {
-                  // Some browsers already open the picker from the click itself.
-                }
-              }}
-              onChange={(event) => moveTask(task.id, event.target.value || null)}
-            />
-          </div>
-          {compact ? null : (
-            <button
-              type="button"
-              className="grid size-11 place-items-center rounded-full text-ink"
-              aria-label={when ? "One day later" : "Set to today"}
-              onClick={() => moveTask(task.id, when ? addDays(when, 1) : today)}
-            >
-              <ChevronRight className="size-5" />
-            </button>
-          )}
-          <Button
-            variant="quiet"
-            className={`max-w-32 shrink-0 ${columns ? "md:hidden" : ""}`}
-            onClick={() => setCategoryOpen(true)}
-            aria-label={`Change category for ${task.title}`}
-          >
-            <span className="truncate">{category ?? "Category"}</span>
-          </Button>
-        </div>
-      ) : columns ? (
-        <span className="hidden md:block" />
-      ) : null}
-      {columns ? (
-        <>
-          <button
-            type="button"
-            onClick={() => setCategoryOpen(true)}
-            aria-label={`Change category for ${task.title}`}
-            className="mt-1 hidden items-center gap-2 text-left text-sm text-muted underline-offset-2 hover:underline md:mt-0 md:flex"
-          >
-            <span className="size-2 shrink-0 rounded-full" style={{ background: category ? categoryTone(category) : "#3f3b35" }} />
-            <span className="truncate">{category ?? "None"}</span>
+        <div className="min-w-0 flex-1 py-0.5 text-left">
+          <button type="button" className="block w-full truncate text-left" onClick={onOpen} aria-label={`Details for ${task.title}`}>
+            <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
           </button>
-          <span className="hidden text-sm text-muted md:block">{task.repeat.kind === "none" ? "Once" : repeatLabel(task.repeat, "short")}</span>
-        </>
-      ) : null}
+          <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
+            {category ? (
+              <span
+                className="max-w-[8rem] truncate rounded-full px-1.5 py-0.5 text-[11px] font-medium leading-none"
+                style={{ color: categoryTone(category), background: "rgb(255 255 255 / 0.06)" }}
+              >
+                {category}
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="text-[11px] text-faint"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setCategoryOpen(true);
+                }}
+              >
+                Add tag
+              </button>
+            )}
+            {project ? <span className="truncate text-[11px] text-muted">{project}</span> : null}
+            {repeat ? <span className="truncate text-[11px] text-muted">{repeat}</span> : null}
+          </span>
+          {!compact && notePreviewSafe(task.notes) ? (
+            <span className="mt-0.5 hidden truncate text-xs text-faint md:block">{notePreviewSafe(task.notes)}</span>
+          ) : null}
+        </div>
+        <div className={`relative shrink-0 pl-2 text-right text-xs font-medium tabular-nums whitespace-nowrap ${horizonClass(horizon)}`}>
+          <span aria-hidden="true">{formatWhen(when, today)}</span>
+          <input
+            type="date"
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            aria-label={`Change date for ${task.title}, currently ${formatWhen(when, today)}`}
+            value={when}
+            onClick={(event) => {
+              try {
+                event.currentTarget.showPicker();
+              } catch {
+                // Some browsers already open the picker from the click itself.
+              }
+            }}
+            onChange={(event) => {
+              if (event.target.value) moveTask(task.id, event.target.value);
+            }}
+          />
+        </div>
       </div>
       {categoryOpen ? (
-        <Modal open onOpenChange={setCategoryOpen} title="Category" description={task.title}>
+        <Modal open onOpenChange={setCategoryOpen} title="Tag" description={task.title}>
           <CategoryPicker
             categoryId={task.categoryId}
             categories={activeCategories(allCategories)}
@@ -741,6 +705,18 @@ function TaskRow({
   );
 }
 
+function notePreviewSafe(notes: string): string {
+  const line = notes.trim().split("\n")[0] ?? "";
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+}
+
+function categoryTone(name: string): string {
+  const tones = ["#d7c4a3", "#9dceb4", "#e0b1a8", "#a9bddb", "#e0d09a", "#cbb4dd"];
+  let hash = 0;
+  for (const char of name) hash = (hash + char.charCodeAt(0)) % tones.length;
+  return tones[hash] ?? tones[0];
+}
+
 function Empty({ view, filtering, onClear }: { view: ViewId; filtering: boolean; onClear: () => void }) {
   if (filtering) {
     return (
@@ -756,13 +732,13 @@ function Empty({ view, filtering, onClear }: { view: ViewId; filtering: boolean;
   const copy: Record<ViewId, { title: string; body: string }> = {
     all: { title: "No toducks yet", body: "Every toduck you add, open or finished, gathers here exactly once." },
     feed: { title: "The feed is empty", body: "Every open toduck lives here, one row each. A repeat stays on its next date until you check it off." },
-    day: { title: "Nothing on this day", body: "Add a toduck below, then open it to write notes or choose a category." },
-    upcoming: { title: "Nothing upcoming", body: "Toducks with a future date will gather here." },
+    day: { title: "Nothing on this day", body: "Add a toduck below. Every toduck has a date." },
+    upcoming: { title: "Nothing upcoming", body: "Toducks with a future date gather here." },
     overdue: { title: "Nothing overdue", body: "Anything still open from an earlier day shows up here." },
-    later: { title: "Nothing without a date", body: "Move a toduck off the calendar and it waits here." },
+    later: { title: "The feed is empty", body: "Every open toduck lives here, one row each." },
     repeats: { title: "No repeating toducks", body: "A repeat shows up once, on its next date. Checking it off moves that same toduck forward." },
     done: { title: "Nothing finished", body: "One-time toducks you check off land here. Repeats schedule their next date instead." },
-    workflow: { title: "Nothing on the board", body: "Toducks land in a column by their date: overdue, today, upcoming, later, or done." },
+    workflow: { title: "Nothing on the board", body: "Toducks land in a column by their date: overdue, today, upcoming, or done." },
     projects: { title: "Nothing in this project", body: "Toducks assigned to this project show up here, open and finished." },
   };
   return (
@@ -790,11 +766,11 @@ function Composer({
   const addCategory = useToduck((s) => s.addCategory);
   const addProject = useToduck((s) => s.addProject);
   const today = todayKey();
-  const defaultDate = view === "later" ? null : view === "upcoming" ? addDays(today, 1) : view === "day" ? focus : today;
+  const defaultDate = view === "upcoming" ? addDays(today, 1) : view === "day" ? focus : today;
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
   const [notesOpen, setNotesOpen] = useState(false);
-  const [date, setDate] = useState<string | null>(defaultDate);
+  const [date, setDate] = useState<string>(defaultDate);
   const [repeat, setRepeat] = useState<Repeat>(view === "repeats" ? { kind: "daily" } : { kind: "none" });
   const [categoryId, setCategoryId] = useState<string | null>(categoryFilter);
   const [projectId, setProjectId] = useState<string | null>(projectFilter);
@@ -809,7 +785,7 @@ function Composer({
     setProjectId(projectFilter);
   }, [defaultDate, categoryFilter, projectFilter]);
 
-  const category = categories.find((item) => item.id === categoryId)?.name ?? "Category";
+  const category = categories.find((item) => item.id === categoryId)?.name ?? "Tag";
   const project = projects.find((item) => item.id === projectId)?.name ?? "Project";
 
   return (
@@ -837,14 +813,14 @@ function Composer({
           className="field"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          placeholder={view === "later" ? "Add a toduck for later" : "Add a toduck"}
+          placeholder="Add a toduck"
         />
         <Button type="submit" variant="primary" disabled={!title.trim()}>
           Add
         </Button>
       </div>
       <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1">
-        <Chip onClick={() => setDateOpen(true)}>{date ? formatWhen(date, today) : "No date"}</Chip>
+        <Chip onClick={() => setDateOpen(true)}>{formatWhen(date, today)}</Chip>
         <Chip onClick={() => setRepeatOpen(true)}>{repeatLabel(repeat, "short")}</Chip>
         <Chip active={!!categoryId} onClick={() => setCategoryOpen(true)}>
           {category}
@@ -876,6 +852,7 @@ function Composer({
             date={date}
             calendarDefaultOpen
             onChange={(next) => {
+              if (!next) return;
               setDate(next);
               setDateOpen(false);
             }}
@@ -888,7 +865,7 @@ function Composer({
         </Modal>
       ) : null}
       {categoryOpen ? (
-        <Modal open onOpenChange={setCategoryOpen} title="Category" description="Choose one category for this toduck.">
+        <Modal open onOpenChange={setCategoryOpen} title="Tag" description="Choose one tag for this toduck.">
           <div className="flex flex-wrap gap-2">
             <Chip
               active={!categoryId}
@@ -953,7 +930,7 @@ function CategoryCreate({ onCreate }: { onCreate: (name: string) => void }) {
         onCreate(name);
       }}
     >
-      <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="New category" aria-label="New category" maxLength={40} />
+      <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="New tag" aria-label="New tag" maxLength={40} />
       <Button type="submit" variant="primary" disabled={!name.trim()}>
         Add
       </Button>

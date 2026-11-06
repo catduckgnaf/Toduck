@@ -1208,6 +1208,10 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	fallback := filepath.Join(s.staticDir, "index.html")
+	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || strings.Contains(path.Base(r.URL.Path), ".")
+	if assetRequest {
+		return false
+	}
 	if _, err := os.Stat(fallback); err != nil {
 		return false
 	}

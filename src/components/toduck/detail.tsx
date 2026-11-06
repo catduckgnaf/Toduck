@@ -222,7 +222,7 @@ function DetailBody({
         if (!open) close();
       }}
       title="Details"
-      description="Category, project, notes, and schedule stay on this toduck."
+      description="Tag, project, notes, and schedule stay on this toduck."
     >
       <label className="sr-only" htmlFor="task-title">
         Toduck name
@@ -237,7 +237,7 @@ function DetailBody({
       />
 
       <section className="mt-6">
-        <SectionLabel>Category</SectionLabel>
+        <SectionLabel>Tag</SectionLabel>
         <div className="mt-2">
           <CategoryPicker
             categoryId={categoryId}
@@ -287,9 +287,10 @@ function DetailBody({
             date={date}
             calendarDefaultOpen
             onChange={(next) => {
+              if (!next) return;
               dateTouched.current = true;
               const todayNow = todayKey();
-              save({ date: next }, next ? `Moved to ${formatWhen(next, todayNow)}` : "Moved to later");
+              save({ date: next }, `Moved to ${formatWhen(next, todayNow)}`);
             }}
           />
         </div>

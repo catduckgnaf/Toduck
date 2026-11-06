@@ -1,18 +1,14 @@
 # Toduck
 
-Toduck is a local first task manager with a responsive Web UI, repeating tasks, categories, search, import and export, optional self hosted synchronization, and an Android companion app.
-
-> **Renamed from Cat2Duck.** The GitHub repository, the app brand, and the container image were renamed to Toduck in October 2026, and the old internal name (Cadence) was retired with it — including the Android app id, the server environment variables, and the browser storage keys. The old repository URL redirects here, and the old image `ghcr.io/catduckgnaf/cat2duck` is superseded by `ghcr.io/catduckgnaf/toduck`. Existing installs need a few one-time steps: Web browser data migrates automatically on first load, and old `cadence.json` exports still import (new exports are `toduck.json`); server installs must rename their environment variables (see the upgrade note in the self hosting guide); and the Android app is a **new app identity** — uninstall the old app and install Toduck fresh (see the Android guide).
+Toduck 1.3.1 is a local-first task inbox. Every toduck has a date. The list stays compact, due dates sit on the right and are colored by when they fall (overdue, tomorrow, this week, next week, next month, future), and tags replace the old category column. It installs as a PWA, and an optional self-hosted server syncs the Web UI with the Android companion.
 
 ## Features
 
 * Local first task storage in the browser
-* Feed, day, upcoming, overdue, later, repeats, and completed views
-* Repeating schedules and category filters
-* JSON backup and restore
-* Optional conflict safe synchronization through the bundled Node server
-* Docker and Unraid packaging
-* Android client and home screen widget
+* Feed, day, upcoming, overdue, repeats, completed, workflow, and project views
+* Tags, projects, search, and JSON backup
+* Installable PWA
+* Docker image tags: `latest` for releases, plus floating `develop` and `nightly` tags built only from a green `main`
 
 ## Development
 

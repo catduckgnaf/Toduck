@@ -1,0 +1,81 @@
+name: Contribution checks
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  contribution-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Read the pull request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const number = context.payload.pull_request.number;
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+            const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: number, per_page: 100});
+            const threads = [];
+            let cursor = null;
+            do {
+              const query = `query($owner:String!, $name:String!, $number:Int!, $cursor:String) {
+                repository(owner:$owner, name:$name) {
+                  pullRequest(number:$number) {
+                    reviewThreads(first:100, after:$cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes { isResolved isOutdated comments(first:20) { nodes { author { login } } } }
+                    }
+                  }
+                }
+              }`;
+              const data = await github.graphql(query, {owner: context.repo.owner, name: context.repo.repo, number, cursor});
+              const page = data.repository.pullRequest.reviewThreads;
+              for (const node of page.nodes) {
+                threads.push({
+                  isResolved: node.isResolved,
+                  isOutdated: node.isOutdated,
+                  authors: node.comments.nodes.map((comment) => comment.author?.login).filter(Boolean),
+                });
+              }
+              cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+            } while (cursor);
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, 'contribution.json'), JSON.stringify({
+              body: pr.body || '',
+              files: files.map((file) => file.filename),
+              threads,
+            }));
+      - name: Policy, Codex threads, and spelling
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from "node:fs";
+          import { spawnSync } from "node:child_process";
+          import { checkPullRequest, unresolvedCodexThreads } from "./scripts/contribution-policy.mjs";
+          import { diffViolations, lineViolations } from "./scripts/us-spelling.mjs";
+          const meta = JSON.parse(readFileSync(process.env.RUNNER_TEMP + "/contribution.json", "utf8"));
+          const errors = checkPullRequest(meta);
+          const open = unresolvedCodexThreads(meta.threads);
+          if (open.length) errors.push(`${open.length} unresolved Codex review thread(s). Resolve them before merge.`);
+          for (const [word, next] of lineViolations(meta.body || "")) {
+            errors.push(`PR description: British spelling '${word}' -- use '${next}' instead`);
+          }
+          const diff = spawnSync("git", ["diff", "--unified=3", "--no-color", "origin/main...HEAD", "--", "*.md"], {encoding: "utf8"});
+          if (diff.status !== 0) errors.push(diff.stderr || "Could not diff Markdown");
+          errors.push(...diffViolations(diff.stdout || ""));
+          if (errors.length) {
+            console.error(errors.join("\n"));
+            process.exit(1);
+          }
+          JS
+      - name: Policy tests
+        run: node --test scripts/contribution-policy.test.mjs scripts/us-spelling.test.mjs

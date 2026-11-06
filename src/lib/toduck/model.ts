@@ -146,6 +146,27 @@ export function formatGroupLabel(key: string, today: string): string {
   return `${WEEKDAYS[d.getDay()]}, ${MONTHS_SHORT[d.getMonth()]} ${d.getDate()}`;
 }
 
+export type Horizon = "overdue" | "tomorrow" | "this-week" | "next-week" | "next-month" | "future";
+
+/** Which colored horizon a due date belongs to. Tomorrow is its own band inside the current week. */
+export function dateHorizon(date: string, today: string): Horizon {
+  if (date < today) return "overdue";
+  if (date === addDays(today, 1)) return "tomorrow";
+  const endThisWeek = addDays(startOfWeek(today), 6);
+  if (date <= endThisWeek) return "this-week";
+  const endNextWeek = addDays(endThisWeek, 7);
+  if (date <= endNextWeek) return "next-week";
+  const start = parseKey(today);
+  const endNextMonth = toKey(new Date(start.getFullYear(), start.getMonth() + 2, 0, 12));
+  if (date <= endNextMonth) return "next-month";
+  return "future";
+}
+
+/** A real YYYY-MM-DD, or `fallback` when the task has none. Toducks always have a date. */
+export function requireDate(date: string | null | undefined, fallback: string): string {
+  return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : fallback;
+}
+
 export function upcomingWeekend(today: string): string {
   const day = parseKey(today).getDay();
   if (day === 0 || day === 6) return today;
@@ -366,7 +387,7 @@ export function visibleTasks(
   });
 }
 
-export type WorkflowColumnId = "overdue" | "today" | "upcoming" | "later" | "done";
+export type WorkflowColumnId = "overdue" | "today" | "upcoming" | "done";
 
 export type WorkflowColumn = {
   id: WorkflowColumnId;
@@ -378,15 +399,13 @@ export const WORKFLOW_COLUMNS: { id: WorkflowColumnId; label: string }[] = [
   { id: "overdue", label: "Overdue" },
   { id: "today", label: "Today" },
   { id: "upcoming", label: "Upcoming" },
-  { id: "later", label: "Later" },
   { id: "done", label: "Done" },
 ];
 
-/** The one workflow column a task sits in, from its shown date / done state only. */
+/** The one workflow column a task sits in. A missing date counts as today — a toduck is never undated. */
 export function workflowColumnFor(task: Task, today: string): WorkflowColumnId {
   if (task.done) return "done";
-  const when = shownDate(task, today);
-  if (!when) return "later";
+  const when = requireDate(shownDate(task, today), today);
   if (when < today) return "overdue";
   if (when > today) return "upcoming";
   return "today";
@@ -431,15 +450,13 @@ export function buildGroups(
     return items.length ? [{ key: "workflow", label: "", tasks: [...items].sort(byCreatedDesc) }] : [];
   }
   if (view === "feed") {
-    const dated = items.map((task) => ({ task, when: shownDate(task, today) ?? "later" }));
+    const dated = items.map((task) => ({ task, when: requireDate(shownDate(task, today), today) }));
     const overdue = dated
-      .filter((item) => item.when !== "later" && item.when < today)
+      .filter((item) => item.when < today)
       .sort((a, b) => (a.when < b.when ? -1 : a.when > b.when ? 1 : byCreatedDesc(a.task, b.task)));
     const rest = dated
-      .filter((item) => item.when === "later" || item.when >= today)
+      .filter((item) => item.when >= today)
       .sort((a, b) => {
-        if (a.when === "later" && b.when !== "later") return 1;
-        if (b.when === "later" && a.when !== "later") return -1;
         if (a.when < b.when) return -1;
         if (a.when > b.when) return 1;
         return byCreatedDesc(a.task, b.task);
@@ -452,7 +469,7 @@ export function buildGroups(
     for (const date of dates) {
       groups.push({
         key: date,
-        label: date === "later" ? "No date" : formatGroupLabel(date, today),
+        label: formatGroupLabel(date, today),
         tasks: rest.filter((item) => item.when === date).map((item) => item.task),
       });
     }
@@ -466,7 +483,7 @@ export function buildGroups(
     const dates = [...new Set(dated.map((item) => item.when))];
     return dates.map((date) => ({
       key: date,
-      label: date === "later" ? "No date" : formatGroupLabel(date, today),
+      label: formatGroupLabel(date, today),
       tasks: dated.filter((item) => item.when === date).map((item) => item.task).sort(byCreatedDesc),
     }));
   }
@@ -597,7 +614,7 @@ export function makeSeed(today: string): { tasks: Task[]; categories: Category[]
       ),
       task(
         "Read twenty pages",
-        null,
+        addDays(today, 3),
         { kind: "none" },
         personal.id,
         "Current book is on the nightstand. Stop at a chapter break.",

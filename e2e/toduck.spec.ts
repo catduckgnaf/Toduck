@@ -349,20 +349,18 @@ test("boot watchdog stays quiet on the login route", async ({ browser }) => {
   }
 });
 
-test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }, testInfo) => {
+test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Views" });
-  if (testInfo.project.name === "desktop-chromium") {
-    // Pinned open by default on desktop, and the choice to collapse sticks.
-    await expect(nav).toBeVisible();
-    await page.getByRole("button", { name: "Toggle navigation" }).click();
-    await expect(nav).toBeHidden();
-    await page.getByRole("button", { name: "Toggle navigation" }).click();
-    await expect(nav).toBeVisible();
-  } else {
-    // Narrow screens start unpinned; the sidebar is a drawer.
-    await expect(nav).toBeHidden();
-    await openSidebarIfNeeded(page);
-  }
+  // The menu overlays the inbox. Opening it must not shrink the list.
+  const before = await page.locator("header").boundingBox();
+  await expect(nav).toBeHidden();
+  await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await expect(nav).toBeVisible();
+  const after = await page.locator("header").boundingBox();
+  expect(before && after && Math.abs(before.width - after.width) < 2).toBe(true);
+  await page.getByRole("button", { name: "Toggle navigation" }).click();
+  await expect(nav).toBeHidden();
+  await openSidebarIfNeeded(page);
   await expect(page.getByRole("button", { name: /^All Tasks/ })).toBeVisible();
   await closeSidebarIfOpen(page);
 
@@ -376,9 +374,9 @@ test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }, testInf
   await clickNav(page, /^All Tasks/);
   await expect(page.getByText("Sidebar QA toduck", { exact: true })).toBeVisible();
 
-  // The Workflow board renders its five columns, done toduck in Done.
+  // The Workflow board renders overdue, today, upcoming, and done.
   await clickNav(page, /^Workflow/);
-  for (const column of ["Overdue", "Today", "Upcoming", "Later", "Done"]) {
+  for (const column of ["Overdue", "Today", "Upcoming", "Done"]) {
     await expect(page.getByRole("heading", { name: new RegExp(`^${column}`) })).toBeVisible();
   }
   await expect(page.getByText("Sidebar QA toduck", { exact: true })).toBeVisible();

@@ -79,7 +79,7 @@ function visibleToUser(task, userId) {
 
 const REPEAT_KINDS = new Set(["none", "daily", "weekdays", "weekly", "monthly", "interval", "days"]);
 
-/** Mirror normalizeRepeat in src/lib/cadence/model.ts; null = not a repeat shape at all. */
+/** Mirror normalizeRepeat in src/lib/toduck/model.ts; null = not a repeat shape at all. */
 function normalizeRepeatInput(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) || !REPEAT_KINDS.has(value.kind)) return null;
   switch (value.kind) {
@@ -108,7 +108,7 @@ function isNullableId(value) {
 
 /**
  * Build a stored task from a REST POST body, mirroring the Web client's
- * addTask shape/defaults (src/lib/cadence/store.ts). ownerId is stamped
+ * addTask shape/defaults (src/lib/toduck/store.ts). ownerId is stamped
  * from the caller's token by the handler, never taken from the body.
  * Returns { task } or { error }.
  */
@@ -395,7 +395,8 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
       return true;
     }
     const fallback = join(staticDir, "index.html");
-    if (!existsSync(fallback)) return false;
+    const assetRequest = pathname.startsWith("/assets/") || pathname.startsWith("/__grok/") || /\.[a-z0-9]+$/i.test(pathname);
+    if (assetRequest || !existsSync(fallback)) return false;
     send(res, 200, readFileSync(fallback), "text/html; charset=utf-8", { "Cache-Control": "no-cache" }, req.method === "HEAD");
     return true;
   }

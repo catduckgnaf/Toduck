@@ -1,6 +1,9 @@
 # Toduck self hosting
 
-The Toduck container serves the compiled Web UI and the `/v1/state` synchronization API from one origin.
+The Toduck container serves the compiled Web UI and the `/v1/state` synchronization API from one origin. Image tags:
+
+* `ghcr.io/catduckgnaf/toduck:latest` and `v1.3.1` style release tags
+* `ghcr.io/catduckgnaf/toduck:develop` and `:nightly`, floating tags that move only to a Quality-green `main` commit
 
 ## Prebuilt image
 
@@ -18,27 +21,6 @@ the image name `ghcr.io/catduckgnaf/toduck:latest` can be used directly as
 the repository. If a pull is denied right after the first publish, open the
 package settings on GitHub and make the package public (or link it to this
 repository) — first-time GHCR packages are not always public by default.
-
-**Upgrading from Cat2Duck:** this project was renamed from Cat2Duck to
-Toduck. The old image `ghcr.io/catduckgnaf/cat2duck` stays published but is
-no longer updated; change your image reference (Compose file, Unraid
-template, or `docker pull`) to `ghcr.io/catduckgnaf/toduck` to keep
-receiving updates. Three one-time changes are required on the server side:
-
-* **Environment variables were renamed, with no fallback.** Rename
-  `CADENCE_TOKEN` to `TODUCK_TOKEN` and `CADENCE_ALLOWED_ORIGINS` to
-  `TODUCK_ALLOWED_ORIGINS` (and, for Compose, `CAT2DUCK_BIND` /
-  `CAT2DUCK_PORT` to `TODUCK_BIND` / `TODUCK_PORT`). The server reads
-  only the new names and **refuses to start without `TODUCK_TOKEN`**.
-* **The Compose volume was renamed** from `cadence-data` to
-  `toduck-data`. Copy your existing `state.json` from the old volume into
-  the new one before starting the renamed stack, or it will start empty
-  (the old volume itself is not deleted). Bind-mount and Unraid installs
-  are unaffected: keep your existing `/data` directory, including an
-  existing `/mnt/user/appdata/cat2duck` path.
-* The state file format itself did not change, and the Web UI migrates
-  browser data stored under the old `cadence` key automatically on first
-  load.
 
 ## Security model
 
@@ -138,7 +120,7 @@ not included; Android keeps using the admin token.
 A small task-level API sits beside the sync API, for automation — it is
 what the [Home Assistant integration](../integrations/home-assistant/)
 uses. Authentication and scoping follow the rules above exactly: send
-`Authorization: Bearer <token>` with either the admin `CADENCE_TOKEN`
+`Authorization: Bearer <token>` with either the admin `TODUCK_TOKEN`
 (sees and can change everything, new tasks are unowned) or a registered
 user's personal token (sees their own tasks plus tasks shared with them;
 new tasks are stamped with that user as owner).
@@ -199,14 +181,16 @@ Back up the entire mounted `/data` directory. To restore manually, stop the cont
 
 ## Unraid
 
+Community Applications uses the template in [catduck-unraid-templates](https://github.com/catduckgnaf/catduck-unraid-templates/blob/main/templates/toduck.xml). You can also import [selfhost/unraid-template.xml](unraid-template.xml).
+
 1. Create `/mnt/user/appdata/toduck`.
-2. Import `selfhost/unraid-template.xml` or add the container manually.
+2. Install the template, or add the container manually with image `ghcr.io/catduckgnaf/toduck:latest`.
 3. Map host port `8793` to container port `8787`.
 4. Map `/mnt/user/appdata/toduck` to `/data`.
 5. Set `TODUCK_TOKEN` to a unique secret of at least 32 characters.
 6. Open `http://<unraid-lan-ip>:8793/health` and confirm a `200` response.
 
-The included template uses `192.168.250.135:8793` in its Web UI link because that is the repository owner's current Unraid address. Change it for other networks.
+`latest` and version tags are releases. `develop` and `nightly` are optional floating tags that move only to a Quality-green `main` commit. Change the repository line if you want one of those instead of `latest`.
 
 ## Build without Compose
 

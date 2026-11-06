@@ -87,6 +87,8 @@ export const Route = createRootRoute({
         content: "A dark task feed. Repeats show once, and checking one moves it to the next date.",
       },
       { name: "theme-color", content: "#141311" },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
     ],
     links: [
       { rel: "icon", type: "image/png", href: "/logo.png" },

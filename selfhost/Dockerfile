@@ -8,21 +8,8 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# Generate static HTML entrypoint
-RUN node -e ' \
-  const { spawn } = require("node:child_process"); \
-  const { writeFileSync } = require("node:fs"); \
-  const preview = spawn("node", ["./node_modules/vite/bin/vite.js", "preview", "--port", "8099", "--host", "127.0.0.1"], { stdio: "ignore" }); \
-  setTimeout(async () => { \
-    try { \
-      const res = await fetch("http://127.0.0.1:8099/"); \
-      const html = await res.text(); \
-      writeFileSync("/app/.vercel/output/static/index.html", html); \
-    } finally { \
-      preview.kill(); \
-      process.exit(0); \
-    } \
-  }, 3000);'
+# Write the static HTML shell and fail the image if its scripts are missing.
+RUN node scripts/capture-static-index.mjs
 
 # Production runtime image
 FROM golang:1.22-alpine AS go-builder

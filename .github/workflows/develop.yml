@@ -1,0 +1,119 @@
+name: Develop Docker image
+
+# The develop branch is a pointer, not a development branch. This job
+# fast-forwards it to the newest commit on main whose Quality workflow
+# succeeded, then publishes ghcr.io/catduckgnaf/toduck:develop.
+# Release tags and latest are never touched. Offset from the nightly schedule.
+on:
+  schedule:
+    - cron: "47 6 * * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the develop tag
+        type: boolean
+        default: true
+      promote:
+        description: Fast-forward develop to the newest green main commit
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-develop
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      changed: ${{ steps.resolve.outputs.changed }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PROMOTE: ${{ github.event_name == 'schedule' || inputs.promote }}
+      PUBLISH_INPUT: ${{ inputs.publish }}
+    steps:
+      - id: resolve
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          branch=develop
+          published=develop-published
+          current=""
+          published_sha=""
+          current=$(gh api "repos/$repo/git/ref/heads/$branch" --jq '.object.sha' 2>/dev/null || true)
+          published_sha=$(gh api "repos/$repo/git/ref/heads/$published" --jq '.object.sha' 2>/dev/null || true)
+          target="$current"
+          if [[ "$PROMOTE" == "true" ]]; then
+            green=$(gh api "repos/$repo/actions/workflows/quality.yml/runs?branch=main&event=push&status=success&per_page=1" --jq '.workflow_runs[0].head_sha // empty')
+            [[ "$green" =~ ^[0-9a-f]{40}$ ]] || { echo "No successful Quality run on main" >&2; exit 1; }
+            if [[ "$green" != "$current" ]]; then
+              if [[ -n "$current" ]]; then
+                status=$(gh api "repos/$repo/compare/${current}...${green}" --jq '.status')
+                [[ "$status" == "ahead" || "$status" == "identical" ]] || { echo "Refusing to move $branch ($status)" >&2; exit 1; }
+                gh api -X PATCH "repos/$repo/git/refs/heads/$branch" -f sha="$green" -F force=false
+              else
+                gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$branch" -f sha="$green"
+              fi
+            fi
+            target="$green"
+          fi
+          changed=false
+          [[ "$target" == "$published_sha" ]] || changed=true
+          publish=false
+          [[ "$GITHUB_EVENT_NAME" == "schedule" || "$PUBLISH_INPUT" == "true" ]] && publish=true
+          {
+            echo "sha=$target"
+            echo "changed=$changed"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  image:
+    needs: promote
+    if: github.event_name == 'workflow_dispatch' || needs.promote.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.promote.outputs.sha }}
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: needs.promote.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: selfhost/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.promote.outputs.publish == 'true' }}
+          tags: ghcr.io/${{ github.repository_owner }}/toduck:develop
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.promote.outputs.sha }}
+      - name: Record the published commit
+        if: needs.promote.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVELOP_SHA: ${{ needs.promote.outputs.sha }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          if gh api "repos/$repo/git/ref/heads/develop-published" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/$repo/git/refs/heads/develop-published" -f sha="$DEVELOP_SHA" -F force=true
+          else
+            gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/develop-published" -f sha="$DEVELOP_SHA"
+          fi

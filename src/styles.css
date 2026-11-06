@@ -16,6 +16,12 @@
   --color-danger: #f0b2a8;
   --color-danger-soft: #3a2421;
   --color-sage: #b7cfc0;
+  --color-horizon-overdue: #f0b2a8;
+  --color-horizon-tomorrow: #f0d29a;
+  --color-horizon-this-week: #b7cfc0;
+  --color-horizon-next-week: #a9bddb;
+  --color-horizon-next-month: #cbb4dd;
+  --color-horizon-future: #8d877d;
 
   --text-display: clamp(2.25rem, 1.6rem + 2vw, 3.25rem);
   --text-display--line-height: 1.1;

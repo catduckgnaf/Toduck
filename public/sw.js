@@ -1,7 +1,7 @@
 // Bump this name on any release that must not inherit the previous
 // shell/asset cache: activate deletes every cache with a different name,
 // so a bump is a clean break from a stale or mismatched cached shell.
-const CACHE = "toduck-v2";
+const CACHE = "toduck-v3";
 const SHELL = ["/", "/logo.png", "/__grok/icon-180.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
@@ -47,16 +47,19 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      const fetched = fetch(req).then((res) => {
-        if (res.ok) {
-          const copy = res.clone();
-          caches.open(CACHE).then((cache) => cache.put(req, copy));
-        }
-        return res;
-      }).catch(() => cached);
-      return cached || fetched;
-    }),
-  );
+  if (url.pathname.startsWith("/assets/") || /\.(js|css|mjs|png|svg|webp|woff2?)$/.test(url.pathname)) {
+    event.respondWith(
+      fetch(req)
+        .then((res) => {
+          const type = res.headers.get("content-type") || "";
+          if (res.ok && !type.includes("text/html")) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => caches.match(req).then((cached) => cached || Response.error())),
+    );
+    return;
+  }
 });

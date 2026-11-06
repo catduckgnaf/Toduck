@@ -1,8 +1,6 @@
 # Toduck — project guide
 
-Toduck is a local-first task manager (formerly Cat2Duck) with a
-responsive Web UI, repeating tasks, categories, search, import/export,
-optional self-hosted sync, and an Android companion app.
+Toduck is a local-first task inbox. Every task has a date. The Web UI calls tags what the stored model still names categories, so sync and Android stay compatible. It also has repeating tasks, projects, search, import/export, optional self-hosted sync, and an Android companion.
 
 ## Layout
 

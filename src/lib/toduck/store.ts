@@ -7,6 +7,7 @@ import {
   formatWhen,
   makeSeed,
   normalizeRepeat,
+  requireDate,
   todayKey,
   type Category,
   type Project,
@@ -135,7 +136,7 @@ export const useToduck = create<State>()(
           notes: input.notes.trim().slice(0, 20_000),
           categoryId: input.categoryId,
           projectId: input.projectId ?? null,
-          date: input.date,
+          date: requireDate(input.date, todayKey()),
           repeat: normalizeRepeat(input.repeat),
           done: false,
           completedAt: null,
@@ -187,12 +188,13 @@ export const useToduck = create<State>()(
       moveTask: (id, date) => {
         const prev = get();
         const task = prev.tasks.find((item) => item.id === id);
-        if (!task || task.date === date) return;
+        const nextDate = requireDate(date, "");
+        if (!task || !nextDate || task.date === nextDate) return;
         const now = nowIso();
         const today = todayKey();
         set({
-          tasks: prev.tasks.map((item) => (item.id === id ? { ...item, date, updatedAt: now } : item)),
-          notice: noticeOf(date ? `Moved to ${formatWhen(date, today)}` : "Moved to later", prev.tasks, prev.categories, prev.projects),
+          tasks: prev.tasks.map((item) => (item.id === id ? { ...item, date: nextDate, updatedAt: now } : item)),
+          notice: noticeOf(`Moved to ${formatWhen(nextDate, today)}`, prev.tasks, prev.categories, prev.projects),
         });
       },
       toggleTask: (id) => {
@@ -253,7 +255,7 @@ export const useToduck = create<State>()(
           categories: prev.categories.map((c) => (c.id === id ? { ...c, deleted: true, updatedAt: now } : c)),
           tasks: prev.tasks.map((t) => (t.categoryId === id ? { ...t, categoryId: null, updatedAt: now } : t)),
           categoryFilter: prev.categoryFilter === id ? null : prev.categoryFilter,
-          notice: noticeOf("Category removed", prev.tasks, prev.categories, prev.projects),
+          notice: noticeOf("Tag removed", prev.tasks, prev.categories, prev.projects),
         });
       },
       addProject: (name) => {
@@ -399,13 +401,15 @@ function finishHydration() {
   const projects = state.projects ?? [];
   const tasks = state.tasks.map((task) => ({
     ...task,
+    date: requireDate(task.date, today),
     projectId: task.projectId === undefined ? null : task.projectId,
     ownerId: task.ownerId === undefined ? null : task.ownerId,
     sharedWith: task.sharedWith ?? [],
   }));
   const projectFilter =
     state.projectFilter && projects.some((p) => p.id === state.projectFilter && !p.deleted) ? state.projectFilter : null;
-  useToduck.setState({ hasHydrated: true, focusDate, categoryFilter, projects, tasks, projectFilter });
+  const view = state.view === "later" ? "feed" : state.view;
+  useToduck.setState({ hasHydrated: true, focusDate, categoryFilter, projects, tasks, projectFilter, view });
 }
 
 if (useToduck.persist) {
@@ -414,12 +418,7 @@ if (useToduck.persist) {
   });
 }
 
-/**
- * One-time storage migration for the Cat2Duck → Toduck rename: the persist
- * key was "cadence" before the rename. If the new "toduck" key is absent
- * and the legacy key exists, copy its value across so existing browser
- * data survives. The legacy key is left in place as a fallback copy.
- */
+/** Copy a legacy persist blob into the current key when the current key is empty. */
 export function migrateLegacyPersistKey(storage: Pick<Storage, "getItem" | "setItem">): void {
   try {
     if (storage.getItem("toduck") === null) {
