@@ -381,35 +381,38 @@ export const useToduck = create<State>()(
 function finishHydration() {
   const state = useToduck.getState();
   const today = todayKey();
-  if (!state.seeded) {
-    const seed = makeSeed(today);
-    useToduck.setState({
-      tasks: seed.tasks,
-      categories: seed.categories,
-      projects: seed.projects,
-      seeded: true,
-      focusDate: today,
-      hasHydrated: true,
-    });
-    return;
+  try {
+    if (!state.seeded) {
+      const seed = makeSeed(today);
+      useToduck.setState({
+        tasks: seed.tasks,
+        categories: seed.categories,
+        projects: seed.projects,
+        seeded: true,
+        focusDate: today,
+        hasHydrated: true,
+      });
+      return;
+    }
+    const categories = Array.isArray(state.categories) ? state.categories : [];
+    const projects = Array.isArray(state.projects) ? state.projects : [];
+    const tasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task) => ({
+      ...task,
+      date: requireDate(task.date, today),
+      projectId: task.projectId === undefined ? null : task.projectId,
+      ownerId: task.ownerId === undefined ? null : task.ownerId,
+      sharedWith: task.sharedWith ?? [],
+    }));
+    const focusDate = !state.focusDate || state.focusDate < today ? today : state.focusDate;
+    const categoryFilter =
+      state.categoryFilter && categories.some((c) => c.id === state.categoryFilter && !c.deleted) ? state.categoryFilter : null;
+    const projectFilter =
+      state.projectFilter && projects.some((p) => p.id === state.projectFilter && !p.deleted) ? state.projectFilter : null;
+    const view = state.view === "later" ? "feed" : state.view;
+    useToduck.setState({ hasHydrated: true, focusDate, categoryFilter, projects, tasks, projectFilter, view });
+  } catch {
+    useToduck.setState({ hasHydrated: true, focusDate: today });
   }
-  const focusDate = !state.focusDate || state.focusDate < today ? today : state.focusDate;
-  const categoryFilter =
-    state.categoryFilter && state.categories.some((c) => c.id === state.categoryFilter && !c.deleted)
-      ? state.categoryFilter
-      : null;
-  const projects = state.projects ?? [];
-  const tasks = state.tasks.map((task) => ({
-    ...task,
-    date: requireDate(task.date, today),
-    projectId: task.projectId === undefined ? null : task.projectId,
-    ownerId: task.ownerId === undefined ? null : task.ownerId,
-    sharedWith: task.sharedWith ?? [],
-  }));
-  const projectFilter =
-    state.projectFilter && projects.some((p) => p.id === state.projectFilter && !p.deleted) ? state.projectFilter : null;
-  const view = state.view === "later" ? "feed" : state.view;
-  useToduck.setState({ hasHydrated: true, focusDate, categoryFilter, projects, tasks, projectFilter, view });
 }
 
 if (useToduck.persist) {
@@ -435,9 +438,12 @@ export async function bootToduck() {
   if (useToduck.getState().hasHydrated) return;
   migrateLegacyPersistKey(window.localStorage);
   try {
-    await useToduck.persist.rehydrate();
+    await Promise.race([
+      useToduck.persist.rehydrate(),
+      new Promise((resolve) => setTimeout(resolve, 4000)),
+    ]);
   } catch {
-    finishHydration();
+    // A broken saved list must not leave the shell on screen.
   }
   if (!useToduck.getState().hasHydrated) finishHydration();
 }

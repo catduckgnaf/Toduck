@@ -111,8 +111,22 @@ export const Route = createRootRoute({
       <body>
         <script
           dangerouslySetInnerHTML={{
-            __html:
-              "if ('serviceWorker' in navigator) { window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); }); }",
+            __html: `(function () {
+  if (!("serviceWorker" in navigator)) return;
+  var done = function () { location.reload(); };
+  if (navigator.serviceWorker.controller) {
+    var key = "toduck-sw-reset";
+    try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, "1"); } catch (e) { return; }
+    navigator.serviceWorker.getRegistrations().then(function (regs) {
+      return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
+    }).then(function () {
+      if (!window.caches) return;
+      return caches.keys().then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); });
+    }).then(done, done);
+    return;
+  }
+  window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
+})();`,
           }}
         />
         <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_SCRIPT }} />
