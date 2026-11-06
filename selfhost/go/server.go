@@ -1208,7 +1208,12 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	fallback := filepath.Join(s.staticDir, "index.html")
-	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || strings.Contains(path.Base(r.URL.Path), ".")
+	decodedPath, decErr := url.PathUnescape(r.URL.Path)
+	if decErr != nil || strings.Contains(decodedPath, "..") {
+		http.Error(w, "invalid URL path", http.StatusBadRequest)
+		return true
+	}
+	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || strings.Contains(path.Base(decodedPath), ".")
 	if assetRequest {
 		return false
 	}

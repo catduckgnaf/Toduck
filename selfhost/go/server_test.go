@@ -138,6 +138,10 @@ func TestBodyLimitAndCORSAndHeaders(t *testing.T) {
 	if fallback.StatusCode != 200 || readBody(fallback) != "home" {
 		t.Fatalf("fallback status %d", fallback.StatusCode)
 	}
+	script, _ := http.Get(server.URL + "/missing.js")
+	if script.StatusCode != 404 || strings.Contains(readBody(script), "home") {
+		t.Fatalf("missing script fell back to HTML: %d", script.StatusCode)
+	}
 	direct := httptest.NewRequest(http.MethodGet, "/%2e%2e/secret.txt", nil)
 	recorder := httptest.NewRecorder()
 	server.Config.Handler.ServeHTTP(recorder, direct)
