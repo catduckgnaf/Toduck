@@ -104,9 +104,7 @@ test("add, edit, complete, repeat, filter, export, import, settings, and compose
 
   await clickNav(page, /^Feed \d+$/);
   await page.getByLabel("New toduck").fill("Repeating QA task");
-  await page.getByRole("button", { name: "Once" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Every day" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await page.getByLabel("Repeat", { exact: true }).selectOption("daily");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await clickNav(page, /^Repeats/);
   await expect(page.getByText("Repeating QA task", { exact: true })).toBeVisible();
@@ -222,9 +220,7 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
 
   // Checking off a repeating task moves it to its next date; it is not "done".
   await page.getByLabel("New toduck").fill("Daily quick task");
-  await page.getByRole("button", { name: "Once" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Every day" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
+  await page.getByLabel("Repeat", { exact: true }).selectOption("daily");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   const dailyRow = page.getByRole("listitem").filter({ hasText: "Daily quick task" });
   await expect(dailyRow).toBeVisible();
@@ -351,16 +347,21 @@ test("boot watchdog stays quiet on the login route", async ({ browser }) => {
 
 test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }) => {
   const nav = page.getByRole("navigation", { name: "Views" });
-  // The menu overlays the inbox. Opening it must not shrink the list.
-  const before = await page.locator("header").boundingBox();
-  await expect(nav).toBeHidden();
-  await page.getByRole("button", { name: "Toggle navigation" }).click();
-  await expect(nav).toBeVisible();
-  const after = await page.locator("header").boundingBox();
-  expect(before && after && Math.abs(before.width - after.width) < 2).toBe(true);
-  await page.getByRole("button", { name: "Toggle navigation" }).click();
-  await expect(nav).toBeHidden();
-  await openSidebarIfNeeded(page);
+  // Wide screens: the menu is pinned open by default, as its own column.
+  // The composer sits beside it and is never covered by it.
+  const wide = (page.viewportSize()?.width ?? 0) >= 768;
+  if (wide) {
+    await expect(nav).toBeVisible();
+    const asideBox = await page.locator("aside").boundingBox();
+    const composerBox = await page.getByLabel("New toduck").boundingBox();
+    expect(asideBox && composerBox && composerBox.x >= asideBox.x + asideBox.width - 1).toBe(true);
+    await page.getByRole("button", { name: "Toggle navigation" }).click();
+    await expect(nav).toBeHidden();
+    await page.getByRole("button", { name: "Toggle navigation" }).click();
+    await expect(nav).toBeVisible();
+  } else {
+    await openSidebarIfNeeded(page);
+  }
   await expect(page.getByRole("button", { name: /^All Tasks/ })).toBeVisible();
   await closeSidebarIfOpen(page);
 
@@ -389,8 +390,7 @@ test("sidebar hosts All Tasks, Workflow, and Projects", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Show toducks in QA Project/ })).toBeVisible();
 
   await page.getByLabel("New toduck").fill("Project QA toduck");
-  await composer.getByRole("button", { name: "Project", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "QA Project" }).click();
+  await page.getByLabel("Project", { exact: true }).selectOption({ label: "QA Project" });
   await composer.getByRole("button", { name: "Add", exact: true }).click();
 
   await page.getByRole("button", { name: /Show toducks in QA Project/ }).click();
@@ -470,5 +470,36 @@ test("multi-user: admin creates a user, shares a toduck, and the user's token se
   } finally {
     server.child.kill();
     await rm(server.directory, { recursive: true, force: true });
+  }
+});
+
+test("adding works when crypto.randomUUID is unavailable (plain-http LAN origins)", async ({ browser }) => {
+  // crypto.randomUUID only exists in secure contexts. The self-host Docker
+  // UI is usually opened at a plain-http LAN address, where it is undefined
+  // and every add used to throw "crypto.randomUUID is not a function", so
+  // neither Enter nor the Add button did anything. Simulate that shape of
+  // crypto on an otherwise normal page and prove adds still land.
+  const context = await browser.newContext();
+  await context.addInitScript(() => {
+    try {
+      Object.defineProperty(window.crypto, "randomUUID", { value: undefined, configurable: true });
+    } catch {
+      // A browser that refuses the override cannot simulate the bug.
+    }
+    localStorage.clear();
+  });
+  const page = await context.newPage();
+  try {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Feed" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.evaluate(() => typeof crypto.randomUUID)).resolves.toBe("undefined");
+    await page.getByLabel("New toduck").fill("Added without randomUUID");
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByText("Added without randomUUID", { exact: true })).toBeVisible();
+    await page.getByLabel("New toduck").fill("Entered without randomUUID");
+    await page.getByLabel("New toduck").press("Enter");
+    await expect(page.getByText("Entered without randomUUID", { exact: true })).toBeVisible();
+  } finally {
+    await context.close();
   }
 });
