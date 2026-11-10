@@ -8,6 +8,7 @@ import {
   makeSeed,
   newId,
   nextOccurrence,
+  presetDate,
   shownDate,
   visibleTasks,
   workflowColumnFor,
@@ -37,6 +38,22 @@ describe("newId", () => {
     assert.equal(typeof newId({}), "string");
     assert.ok(newId({}).length > 0);
     assert.notEqual(newId(undefined) ?? "", "");
+  });
+});
+
+describe("date presets", () => {
+  it("lands each quick preset on its named date", () => {
+    // Tuesday 2026-11-10; weeks start on Monday.
+    assert.equal(presetDate("today", "2026-11-10"), "2026-11-10");
+    assert.equal(presetDate("tomorrow", "2026-11-10"), "2026-11-11");
+    assert.equal(presetDate("this-week", "2026-11-10"), "2026-11-15");
+    assert.equal(presetDate("next-week", "2026-11-10"), "2026-11-22");
+    assert.equal(presetDate("next-month", "2026-11-10"), "2026-12-10");
+  });
+
+  it("clamps next month to the target month's last day", () => {
+    assert.equal(presetDate("next-month", "2026-01-31"), "2026-02-28");
+    assert.equal(presetDate("next-month", "2026-12-15"), "2027-01-15");
   });
 });
 

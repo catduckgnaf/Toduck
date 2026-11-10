@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu, Settings, X } from "lucide-react";
 import { Detail } from "@/components/toduck/detail";
 import { CategoriesDialog, ProjectsDialog, SettingsDialog } from "@/components/toduck/settings";
-import { Button, CategoryPicker, Chip, Modal } from "@/components/toduck/ui";
+import { Button, CategoryPicker, Chip, Modal, ProjectPicker, RepeatChooser } from "@/components/toduck/ui";
 import {
   activeCategories,
   activeProjects,
@@ -12,8 +12,10 @@ import {
   categoryName,
   countFor,
   dateHorizon,
+  DATE_PRESETS,
   formatWhen,
   monthDay,
+  presetDate,
   projectName,
   repeatLabel,
   requireDate,
@@ -591,11 +593,14 @@ function TaskRow({
   const toggleTask = useToduck((s) => s.toggleTask);
   const updateTask = useToduck((s) => s.updateTask);
   const addCategory = useToduck((s) => s.addCategory);
+  const addProject = useToduck((s) => s.addProject);
   const allCategories = useToduck((s) => s.categories);
+  const allProjects = useToduck((s) => s.projects);
   const [categoryOpen, setCategoryOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [repeatOpen, setRepeatOpen] = useState(false);
   const when = requireDate(shownDate(task, today), today);
   const horizon = dateHorizon(when, today);
-  const repeat = task.repeat.kind === "none" ? null : repeatLabel(task.repeat, "short");
 
   return (
     <li className="border-b border-line px-3 md:px-4">
@@ -629,8 +634,28 @@ function TaskRow({
             >
               {category ?? "Add tag"}
             </button>
-            {project ? <span className="truncate text-[11px] text-muted">{project}</span> : null}
-            {repeat ? <span className="truncate text-[11px] text-muted">{repeat}</span> : null}
+            <button
+              type="button"
+              className={project ? "max-w-[8rem] truncate text-[11px] text-muted" : "shrink-0 text-[11px] text-faint"}
+              aria-label={`Change project for ${task.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setProjectOpen(true);
+              }}
+            >
+              {project ?? "Add project"}
+            </button>
+            <button
+              type="button"
+              className="shrink-0 text-[11px] text-muted"
+              aria-label={`Change repeat for ${task.title}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                setRepeatOpen(true);
+              }}
+            >
+              {repeatLabel(task.repeat, "short")}
+            </button>
           </span>
           {!compact && notePreviewSafe(task.notes) ? (
             <span className="mt-0.5 hidden truncate text-xs text-faint md:block">{notePreviewSafe(task.notes)}</span>
@@ -656,6 +681,31 @@ function TaskRow({
           />
         </div>
       </div>
+      {projectOpen ? (
+        <Modal open onOpenChange={setProjectOpen} title="Project" description={task.title}>
+          <ProjectPicker
+            projectId={task.projectId}
+            projects={activeProjects(allProjects)}
+            onChange={(id) => {
+              updateTask(task.id, { projectId: id });
+              setProjectOpen(false);
+            }}
+            onCreate={(name) => {
+              const id = addProject(name);
+              if (id) updateTask(task.id, { projectId: id });
+              setProjectOpen(false);
+            }}
+          />
+        </Modal>
+      ) : null}
+      {repeatOpen ? (
+        <Modal open onOpenChange={setRepeatOpen} title="Repeat" description={task.title}>
+          <RepeatChooser repeat={task.repeat} date={task.date} onChange={(next) => updateTask(task.id, { repeat: next })} />
+          <Button className="mt-3" variant="quiet" onClick={() => setRepeatOpen(false)}>
+            Done
+          </Button>
+        </Modal>
+      ) : null}
       {categoryOpen ? (
         <Modal open onOpenChange={setCategoryOpen} title="Tag" description={task.title}>
           <CategoryPicker
@@ -803,8 +853,8 @@ function Composer({
           placeholder="Add the details you'll want later."
         />
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 pb-1 lg:grid-cols-4">
-        <div>
+      <div className="mt-2 flex flex-wrap items-end gap-2">
+        <div className="w-44 shrink-0">
           <label className={labelClass} htmlFor="new-date">
             Date
           </label>
@@ -818,6 +868,18 @@ function Composer({
             }}
           />
         </div>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Quick dates">
+          {DATE_PRESETS.map((preset) => {
+            const target = presetDate(preset.id, today);
+            return (
+              <Chip key={preset.id} active={date === target} onClick={() => setDate(target)}>
+                {preset.label}
+              </Chip>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-2 pb-1 sm:grid-cols-3">
         <div>
           <label className={labelClass} htmlFor="new-tag">
             Tag

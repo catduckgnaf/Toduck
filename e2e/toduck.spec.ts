@@ -218,6 +218,20 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(dialog).toBeHidden();
   await expect(quickRow).toContainText("Home");
 
+  // The repeat can be changed from the row, without opening the details.
+  await quickRow.getByRole("button", { name: "Change repeat for Quick date task" }).click();
+  await dialog.getByRole("button", { name: "Weekdays" }).click();
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(quickRow).toContainText("Weekdays");
+
+  // A project can be created and assigned from the row too.
+  await quickRow.getByRole("button", { name: "Change project for Quick date task" }).click();
+  await dialog.getByLabel("New project").fill("Row Project");
+  await dialog.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(quickRow).toContainText("Row Project");
+
   // Checking off a repeating task moves it to its next date; it is not "done".
   await page.getByLabel("New toduck").fill("Daily quick task");
   await page.getByLabel("Repeat", { exact: true }).selectOption("daily");
@@ -229,6 +243,26 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(dailyRow.getByLabel(/Change date for Daily quick task/)).toHaveValue(tomorrow);
   await clickNav(page, /^Done/);
   await expect(page.getByText("Daily quick task", { exact: true })).toHaveCount(0);
+});
+
+test("composer quick dates set the new toduck's date", async ({ page }) => {
+  const key = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+  // Weeks start on Monday; "Next week" lands on next Sunday.
+  const now = new Date();
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (now.getDay() === 0 ? 6 : now.getDay() - 1));
+  const nextSunday = key(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 13));
+
+  await page.getByLabel("New toduck").fill("Preset date task");
+  await page.getByRole("button", { name: "Next week", exact: true }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Preset date task" });
+  await expect(row).toBeVisible();
+  await expect(row.getByLabel(/Change date for Preset date task/)).toHaveValue(nextSunday);
 });
 
 test("self-host server serves a page whose inline scripts run", async ({ page }, testInfo) => {

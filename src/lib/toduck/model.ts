@@ -194,6 +194,41 @@ export function requireDate(date: string | null | undefined, fallback: string): 
   return typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : fallback;
 }
 
+export type DatePreset = "today" | "tomorrow" | "this-week" | "next-week" | "next-month";
+
+export const DATE_PRESETS: { id: DatePreset; label: string }[] = [
+  { id: "today", label: "Today" },
+  { id: "tomorrow", label: "Tomorrow" },
+  { id: "this-week", label: "This week" },
+  { id: "next-week", label: "Next week" },
+  { id: "next-month", label: "Next month" },
+];
+
+/**
+ * The date a quick preset lands on. Weeks start on Monday (as in
+ * startOfWeek): "this week" is this Sunday, "next week" is next Sunday,
+ * and "next month" is the same day next month, clamped to its last day.
+ */
+export function presetDate(preset: DatePreset, today: string): string {
+  switch (preset) {
+    case "today":
+      return today;
+    case "tomorrow":
+      return addDays(today, 1);
+    case "this-week":
+      return addDays(startOfWeek(today), 6);
+    case "next-week":
+      return addDays(startOfWeek(today), 13);
+    case "next-month": {
+      const start = parseKey(today);
+      const target = new Date(start.getFullYear(), start.getMonth() + 1, 1, 12);
+      const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+      target.setDate(Math.min(start.getDate(), lastDay));
+      return toKey(target);
+    }
+  }
+}
+
 export function upcomingWeekend(today: string): string {
   const day = parseKey(today).getDay();
   if (day === 0 || day === 6) return today;
