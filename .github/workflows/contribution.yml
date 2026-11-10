@@ -13,7 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Full history: the policy step diffs Markdown against origin/main,
+      # which a depth-1 checkout does not have (it failed every PR with
+      # "fatal: bad revision 'origin/main...HEAD'").
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
