@@ -6,6 +6,7 @@ import {
   completionPatch,
   formatWhen,
   makeSeed,
+  newId,
   normalizeRepeat,
   requireDate,
   todayKey,
@@ -131,7 +132,7 @@ export const useToduck = create<State>()(
         if (!title) return;
         const now = nowIso();
         const task: Task = {
-          id: crypto.randomUUID(),
+          id: newId(),
           title,
           notes: input.notes.trim().slice(0, 20_000),
           categoryId: input.categoryId,
@@ -229,7 +230,7 @@ export const useToduck = create<State>()(
         const existing = activeCategories(get().categories).find((c) => c.name.toLowerCase() === trimmed.toLowerCase());
         if (existing) return existing.id;
         const now = nowIso();
-        const id = crypto.randomUUID();
+        const id = newId();
         set({
           categories: [...get().categories, { id, name: trimmed, createdAt: now, updatedAt: now }],
         });
@@ -264,7 +265,7 @@ export const useToduck = create<State>()(
         const existing = activeProjects(get().projects).find((p) => p.name.toLowerCase() === trimmed.toLowerCase());
         if (existing) return existing.id;
         const now = nowIso();
-        const id = crypto.randomUUID();
+        const id = newId();
         set({
           projects: [...get().projects, { id, name: trimmed, createdAt: now, updatedAt: now }],
         });

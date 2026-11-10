@@ -6,6 +6,7 @@ import {
   completionPatch,
   dateHorizon,
   makeSeed,
+  newId,
   nextOccurrence,
   shownDate,
   visibleTasks,
@@ -14,6 +15,30 @@ import {
   type Project,
   type Task,
 } from "./model.ts";
+
+describe("newId", () => {
+  it("uses randomUUID when the context provides it (secure origins)", () => {
+    assert.equal(newId({ randomUUID: () => "from-random-uuid" }), "from-random-uuid");
+  });
+
+  it("still returns a v4-shaped id when randomUUID is missing (plain-http LAN origins)", () => {
+    // Insecure contexts expose getRandomValues but not randomUUID; that is
+    // how the self-host Docker UI is normally opened, and adds used to throw.
+    const fill = (array: Uint8Array) => {
+      array.fill(0xab);
+      return array;
+    };
+    const id = newId({ getRandomValues: fill });
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(id, "abababab-abab-4bab-abab-abababababab");
+  });
+
+  it("never throws when crypto is unavailable entirely", () => {
+    assert.equal(typeof newId({}), "string");
+    assert.ok(newId({}).length > 0);
+    assert.notEqual(newId(undefined) ?? "", "");
+  });
+});
 
 describe("repeats", () => {
   it("schedules the next day, weekday, week, and month", () => {

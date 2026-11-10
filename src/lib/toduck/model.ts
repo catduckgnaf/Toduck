@@ -98,6 +98,33 @@ export function todayKey(now = new Date()): string {
   return toKey(now);
 }
 
+type IdCrypto = {
+  randomUUID?: () => string;
+  getRandomValues?: (array: Uint8Array) => Uint8Array;
+};
+
+/**
+ * A new unique id. `crypto.randomUUID` only exists in secure contexts
+ * (https, localhost), so on a plain-http LAN address — exactly how the
+ * self-host Docker UI is usually opened — it is undefined and every
+ * add threw. Fall back to `crypto.getRandomValues`, which browsers do
+ * expose on insecure origins, and shape the bytes as a v4 UUID.
+ */
+export function newId(source: IdCrypto | undefined = globalThis.crypto): string {
+  if (source && typeof source.randomUUID === "function") return source.randomUUID();
+  if (source && typeof source.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    source.getRandomValues(bytes);
+    bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+    bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+    const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return `id-${Date.now().toString(36)}-${Math.floor(Math.random() * 0xffffffff)
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
 export function parseKey(key: string): Date {
   const [y, m, d] = key.split("-").map(Number);
   return new Date(y, (m ?? 1) - 1, d ?? 1, 12, 0, 0, 0);
@@ -533,7 +560,7 @@ function stamp(
 export function makeSeed(today: string): { tasks: Task[]; categories: Category[]; projects: Project[] } {
   const now = new Date().toISOString();
   const cat = (name: string, offset: number): Category => ({
-    id: crypto.randomUUID(),
+    id: newId(),
     name,
     createdAt: new Date(Date.now() + offset).toISOString(),
     updatedAt: now,
@@ -550,7 +577,7 @@ export function makeSeed(today: string): { tasks: Task[]; categories: Category[]
     notes: string,
   ): Task =>
     stamp({
-      id: crypto.randomUUID(),
+      id: newId(),
       title,
       notes,
       categoryId,

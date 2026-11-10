@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu, Settings, X } from "lucide-react";
 import { Detail } from "@/components/toduck/detail";
 import { CategoriesDialog, ProjectsDialog, SettingsDialog } from "@/components/toduck/settings";
-import { Button, CategoryPicker, Chip, DateChooser, Modal, ProjectPicker, RepeatChooser } from "@/components/toduck/ui";
+import { Button, CategoryPicker, Chip, Modal } from "@/components/toduck/ui";
 import {
   activeCategories,
   activeProjects,
@@ -59,7 +59,10 @@ export function ToduckScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [projectsManageOpen, setProjectsManageOpen] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The menu is pinned open by default on wide screens, as a real column
+  // beside the inbox. On small screens it starts closed and opens as a
+  // drawer over the inbox instead.
+  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window === "undefined" || window.innerWidth >= 768);
 
   useEffect(() => {
     const unsub = bindSync();
@@ -108,7 +111,9 @@ export function ToduckScreen() {
   function navigate(view: ViewId) {
     if (view === "projects") state.setProjectFilter(null);
     state.setView(view);
-    setSidebarOpen(false);
+    // The pinned desktop menu stays open; only the small-screen drawer
+    // closes after a choice.
+    if (typeof window !== "undefined" && window.innerWidth < 768) setSidebarOpen(false);
   }
 
   function renderGroups() {
@@ -161,17 +166,17 @@ export function ToduckScreen() {
           </div>
         </div>
       </header>
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
       {sidebarOpen ? (
         <button
           type="button"
           aria-label="Close navigation"
-          className="absolute inset-0 z-30 bg-black/50"
+          className="absolute inset-0 z-30 bg-black/50 md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       ) : null}
       {sidebarOpen ? (
-        <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r border-line bg-paper shadow-2xl" aria-label="Sidebar">
+        <aside className="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r border-line bg-paper shadow-2xl md:static md:z-auto md:shadow-none" aria-label="Sidebar">
           <div className="flex items-center gap-3 px-4 pt-5">
             <img src="/logo.png" alt="" className="size-11 shrink-0 rounded-xl" />
             <div className="min-w-0 flex-1">
@@ -287,6 +292,7 @@ export function ToduckScreen() {
         </aside>
       ) : null}
 
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {state.view === "day" ? (
           <WeekStrip
             focus={focus}
@@ -379,6 +385,7 @@ export function ToduckScreen() {
         ) : null}
 
         <Composer view={state.view} focus={focus} categoryFilter={state.categoryFilter} projectFilter={state.projectFilter} />
+      </div>
 
         {detailId ? <Detail taskId={detailId} onClose={() => setDetailId(null)} /> : null}
         {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
@@ -728,21 +735,18 @@ function Composer({
   const categories = activeCategories(useToduck((s) => s.categories));
   const projects = activeProjects(useToduck((s) => s.projects));
   const addTask = useToduck((s) => s.addTask);
-  const addCategory = useToduck((s) => s.addCategory);
-  const addProject = useToduck((s) => s.addProject);
   const today = todayKey();
   const defaultDate = view === "upcoming" ? addDays(today, 1) : view === "day" ? focus : today;
+  // The composer offers the preset repeats; custom intervals and chosen
+  // days are set from a toduck's details.
+  type SimpleRepeatKind = "none" | "daily" | "weekdays" | "weekly" | "monthly";
+  const defaultRepeatKind: SimpleRepeatKind = view === "repeats" ? "daily" : "none";
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
-  const [notesOpen, setNotesOpen] = useState(false);
   const [date, setDate] = useState<string>(defaultDate);
-  const [repeat, setRepeat] = useState<Repeat>(view === "repeats" ? { kind: "daily" } : { kind: "none" });
+  const [repeatKind, setRepeatKind] = useState<SimpleRepeatKind>(defaultRepeatKind);
   const [categoryId, setCategoryId] = useState<string | null>(categoryFilter);
   const [projectId, setProjectId] = useState<string | null>(projectFilter);
-  const [dateOpen, setDateOpen] = useState(false);
-  const [repeatOpen, setRepeatOpen] = useState(false);
-  const [categoryOpen, setCategoryOpen] = useState(false);
-  const [projectOpen, setProjectOpen] = useState(false);
 
   useEffect(() => {
     setDate(defaultDate);
@@ -750,8 +754,7 @@ function Composer({
     setProjectId(projectFilter);
   }, [defaultDate, categoryFilter, projectFilter]);
 
-  const category = categories.find((item) => item.id === categoryId)?.name ?? "Tag";
-  const project = projects.find((item) => item.id === projectId)?.name ?? "Project";
+  const labelClass = "mb-1 block text-xs font-medium text-muted";
 
   return (
     <form
@@ -759,146 +762,119 @@ function Composer({
       onSubmit={(event) => {
         event.preventDefault();
         if (!title.trim()) return;
+        const repeat: Repeat = repeatKind === "none" ? { kind: "none" } : { kind: repeatKind };
         addTask({ title, notes, categoryId, projectId, date, repeat });
         setTitle("");
         setNotes("");
-        setNotesOpen(false);
         setDate(defaultDate);
         setCategoryId(categoryFilter);
         setProjectId(projectFilter);
-        setRepeat(view === "repeats" ? { kind: "daily" } : { kind: "none" });
+        setRepeatKind(defaultRepeatKind);
       }}
     >
-      <div className="flex gap-2">
-        <label className="sr-only" htmlFor="new-task">
-          New toduck
-        </label>
-        <input
-          id="new-task"
-          className="field"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="Add a toduck"
-        />
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1">
+          <label className={labelClass} htmlFor="new-task">
+            Task name
+          </label>
+          <input
+            id="new-task"
+            className="field"
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="Add a toduck"
+            aria-label="New toduck"
+          />
+        </div>
         <Button type="submit" variant="primary" disabled={!title.trim()}>
           Add
         </Button>
       </div>
-      <div className="no-scrollbar mt-2 flex gap-2 overflow-x-auto pb-1">
-        <Chip onClick={() => setDateOpen(true)}>{formatWhen(date, today)}</Chip>
-        <Chip onClick={() => setRepeatOpen(true)}>{repeatLabel(repeat, "short")}</Chip>
-        <Chip active={!!categoryId} onClick={() => setCategoryOpen(true)}>
-          {category}
-        </Chip>
-        <Chip active={!!projectId} onClick={() => setProjectOpen(true)}>
-          {project}
-        </Chip>
-        <Chip active={notesOpen || notes.trim().length > 0} aria-expanded={notesOpen} onClick={() => setNotesOpen((open) => !open)}>
-          Notes
-        </Chip>
+      <div className="mt-2">
+        <label className={labelClass} htmlFor="new-notes">
+          Details
+        </label>
+        <textarea
+          id="new-notes"
+          className="field resize-y"
+          rows={2}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+          placeholder="Add the details you'll want later."
+        />
       </div>
-      {notesOpen ? (
-        <div className="pb-2">
-          <label className="text-sm font-medium text-muted" htmlFor="new-notes">
-            Notes
+      <div className="mt-2 grid grid-cols-2 gap-2 pb-1 lg:grid-cols-4">
+        <div>
+          <label className={labelClass} htmlFor="new-date">
+            Date
           </label>
-          <textarea
-            id="new-notes"
-            className="notes-area mt-2"
-            value={notes}
-            onChange={(event) => setNotes(event.target.value)}
-            placeholder="Add the details you'll want later."
+          <input
+            id="new-date"
+            type="date"
+            className="field"
+            value={date}
+            onChange={(event) => {
+              if (event.target.value) setDate(event.target.value);
+            }}
           />
         </div>
-      ) : null}
-      {dateOpen ? (
-        <Modal open onOpenChange={setDateOpen} title="Date" description="Where this toduck should land.">
-          <DateChooser
-            date={date}
-            calendarDefaultOpen
-            onChange={(next) => {
-              if (!next) return;
-              setDate(next);
-              setDateOpen(false);
-            }}
-          />
-        </Modal>
-      ) : null}
-      {repeatOpen ? (
-        <Modal open onOpenChange={setRepeatOpen} title="Repeat" description="The next date is set when you finish this one.">
-          <RepeatChooser repeat={repeat} date={date} onChange={setRepeat} />
-        </Modal>
-      ) : null}
-      {categoryOpen ? (
-        <Modal open onOpenChange={setCategoryOpen} title="Tag" description="Choose one tag for this toduck.">
-          <div className="flex flex-wrap gap-2">
-            <Chip
-              active={!categoryId}
-              onClick={() => {
-                setCategoryId(null);
-                setCategoryOpen(false);
-              }}
-            >
-              None
-            </Chip>
+        <div>
+          <label className={labelClass} htmlFor="new-tag">
+            Tag
+          </label>
+          <select
+            id="new-tag"
+            className="field"
+            value={categoryId ?? ""}
+            onChange={(event) => setCategoryId(event.target.value || null)}
+          >
+            <option value="">No tag</option>
             {categories.map((item) => (
-              <Chip
-                key={item.id}
-                active={categoryId === item.id}
-                onClick={() => {
-                  setCategoryId(item.id);
-                  setCategoryOpen(false);
-                }}
-              >
+              <option key={item.id} value={item.id}>
                 {item.name}
-              </Chip>
+              </option>
             ))}
-          </div>
-          <CategoryCreate
-            onCreate={(name) => {
-              const id = addCategory(name);
-              if (id) setCategoryId(id);
-              setCategoryOpen(false);
-            }}
-          />
-        </Modal>
-      ) : null}
-      {projectOpen ? (
-        <Modal open onOpenChange={setProjectOpen} title="Project" description="Choose one project for this toduck.">
-          <ProjectPicker
-            projectId={projectId}
-            projects={projects}
-            onChange={(id) => {
-              setProjectId(id);
-              setProjectOpen(false);
-            }}
-            onCreate={(name) => {
-              const id = addProject(name);
-              if (id) setProjectId(id);
-              setProjectOpen(false);
-            }}
-          />
-        </Modal>
-      ) : null}
+          </select>
+        </div>
+        <div>
+          <label className={labelClass} htmlFor="new-repeat">
+            Repeat
+          </label>
+          <select
+            id="new-repeat"
+            className="field"
+            value={repeatKind}
+            onChange={(event) => setRepeatKind(event.target.value as SimpleRepeatKind)}
+          >
+            <option value="none">Once</option>
+            <option value="daily">Every day</option>
+            <option value="weekdays">Weekdays</option>
+            <option value="weekly">Every week</option>
+            <option value="monthly">Every month</option>
+          </select>
+        </div>
+        <div>
+          <label className={labelClass} htmlFor="new-project">
+            Project
+          </label>
+          <select
+            id="new-project"
+            className="field"
+            value={projectId ?? ""}
+            onChange={(event) => setProjectId(event.target.value || null)}
+          >
+            <option value="">No project</option>
+            {projects.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <p className="pb-1 text-xs text-faint">Custom repeats and new tags live in a toduck's details and the Tags dialog.</p>
     </form>
   );
 }
 
-function CategoryCreate({ onCreate }: { onCreate: (name: string) => void }) {
-  const [name, setName] = useState("");
-  return (
-    <form
-      className="mt-3 flex gap-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!name.trim()) return;
-        onCreate(name);
-      }}
-    >
-      <input className="field" value={name} onChange={(event) => setName(event.target.value)} placeholder="New tag" aria-label="New tag" maxLength={40} />
-      <Button type="submit" variant="primary" disabled={!name.trim()}>
-        Add
-      </Button>
-    </form>
-  );
-}
+
