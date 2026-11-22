@@ -278,6 +278,100 @@ test("row date sits next to the task title, not at the far right", async ({ page
   await expectDateBesideTitle();
 });
 
+test("task details open as a right-side pane with focus, Escape, and repeat feedback", async ({ page }) => {
+  // A daily repeat dated today, opened from the Today view, so completing
+  // it moves its row out of the list while the pane is open. The nav button
+  // is scoped: the composer's "Today" quick-date chip matches /^Today/ too.
+  await openSidebarIfNeeded(page);
+  await page
+    .getByRole("navigation", { name: "Views" })
+    .getByRole("button", { name: /^Today \d+$/ })
+    .click();
+  await page.getByLabel("New toduck").fill("Pane QA task");
+  await page.getByLabel("Repeat", { exact: true }).selectOption("daily");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Pane QA task" });
+  await expect(row).toBeVisible();
+
+  const detailsButton = page.getByRole("button", { name: "Details for Pane QA task" });
+  await detailsButton.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+
+  // The pane docks to the right edge: full-width on small screens, a
+  // 30rem sheet beside the list on wide ones.
+  const viewport = page.viewportSize() ?? { width: 1280, height: 800 };
+  const paneBox = await dialog.boundingBox();
+  expect(paneBox).not.toBeNull();
+  if (paneBox) {
+    expect(paneBox.x + paneBox.width).toBeGreaterThanOrEqual(viewport.width - 1);
+    if (viewport.width >= 768) {
+      expect(paneBox.x).toBeGreaterThan(viewport.width / 2);
+      expect(paneBox.width).toBeLessThanOrEqual(481);
+    } else {
+      expect(paneBox.width).toBeGreaterThanOrEqual(viewport.width - 1);
+    }
+  }
+
+  // Opening slides the pane in, and focus lands inside it.
+  await expect
+    .poll(() => dialog.evaluate((element) => getComputedStyle(element).animationName))
+    .toBe("toduck-pane-in");
+  const focusInside = await page.evaluate(() => {
+    const pane = document.querySelector('[role="dialog"]');
+    return !!pane && pane.contains(document.activeElement);
+  });
+  expect(focusInside).toBe(true);
+
+  // Escape closes the pane and returns focus to the row's Details button.
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(detailsButton).toBeFocused();
+
+  // Reopen, edit the title, then change the repeat: the pane stays open
+  // and the draft survives the change, with visible feedback.
+  await detailsButton.click();
+  await expect(dialog).toBeVisible();
+  await dialog.getByLabel("Toduck name").fill("Pane QA task edited");
+  await dialog.getByRole("button", { name: "Change repeat" }).click();
+  await dialog.getByRole("button", { name: "Every week" }).click();
+  // The calendar's caption is also role=status, so the pane's own
+  // feedback line is picked out by its element, not the role alone.
+  const status = dialog.locator("p.repeat-flash");
+  await expect(status).toContainText("Every week — next is");
+  await expect(dialog.getByLabel("Toduck name")).toHaveValue("Pane QA task edited");
+
+  // Completing the repeat from the pane moves it forward and its row
+  // leaves the Today list — the pane stays open on the same task, draft
+  // intact, with feedback and an Undo. (The repeat is weekly by now, so
+  // the next date is next Sunday, not tomorrow.)
+  await dialog.getByRole("button", { name: "Done — move to next time" }).click();
+  await expect(status).toContainText("Moved to");
+  await expect(dialog.getByRole("button", { name: "Undo" })).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel("Toduck name")).toHaveValue("Pane QA task edited");
+  // A role query cannot see the list while the modal pane is open (Radix
+  // aria-hides everything outside the dialog), so the row's presence is
+  // checked at the DOM level here.
+  const listRows = page.locator("main li").filter({ hasText: "Pane QA task edited" });
+  await expect(listRows).toHaveCount(0);
+
+  // Undo brings the row back; the pane still holds the same draft.
+  await dialog.getByRole("button", { name: "Undo" }).click();
+  await expect(listRows).toHaveCount(1);
+  await expect(dialog.getByLabel("Toduck name")).toHaveValue("Pane QA task edited");
+
+  // Reduced motion turns the slide off entirely.
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect
+    .poll(() => dialog.evaluate((element) => getComputedStyle(element).animationName))
+    .toBe("none");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test("composer quick dates set the new toduck's date", async ({ page }) => {
   const key = (date: Date) => {
     const y = date.getFullYear();
