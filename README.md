@@ -7,6 +7,7 @@ Toduck 1.3.1 is a local-first task inbox. Every toduck has a date. The list stay
 * Local first task storage in the browser
 * Feed, day, upcoming, overdue, repeats, completed, workflow, and project views
 * Tags, projects, search, and JSON backup
+* Natural language entry in the composer: type a date, time, or repeat in the task name — “Call mom tomorrow at 3pm”, “Gym every Mon Wed Fri”, “Pay bill Dec 5” — and check the editable preview before adding. Quoted text stays literal, typo'd words are offered as suggestions (never silently corrected), and ambiguous input such as “12/5” or “at 5” is offered as a choice. `+Project`, `#tag`, and `!high` set a project, tag, and priority. Times and priorities save as visible note lines, since tasks have no time or priority field.
 * Installable PWA
 * Docker image tags: `latest` for releases, plus floating `develop` and `nightly` tags built only from a green `main`
 
