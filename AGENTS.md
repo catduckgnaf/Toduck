@@ -35,8 +35,15 @@ cd selfhost/go && go test ./...
 
 - Start Vite only through the npm scripts. They route through
   `scripts/with-app-env.mjs`, which merges `app-env.json` (repo root) into
-  the environment; that file ships `VITE_AUTH_ENABLED=false`, and a real
-  environment variable always wins over it.
+  the environment (only `VITE_` keys; a real environment variable always
+  wins). The file currently carries no client flags.
+- There is no web sign-in screen and no client-side auth gate. A gate in the
+  browser cannot protect data: tasks live in browser storage, and synced data is
+  protected only by the server's bearer tokens (`TODUCK_TOKEN` admin, personal
+  tokens per user). Never add a client-only gate and call it security. Any new
+  data route must call the server's `authenticate` step first, in both
+  `selfhost/go/server.go` and `selfhost/server.mjs`, and extend the route
+  table in the "every API route" tests in both server test files.
 - Tasks stay in browser storage unless sync is configured. The sync token
   (`TODUCK_TOKEN`, at least 32 characters) is kept only in the browser
   session — never commit it. See `selfhost/README.md` for the sync API,
