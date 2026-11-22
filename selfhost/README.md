@@ -2,7 +2,7 @@
 
 The Toduck container serves the compiled Web UI and the `/v1/state` synchronization API from one origin. Image tags:
 
-* `ghcr.io/catduckgnaf/toduck:latest` and `v1.3.1` style release tags
+* `ghcr.io/catduckgnaf/toduck:latest` and `v1.3.2` style release tags
 * `ghcr.io/catduckgnaf/toduck:develop` and `:nightly`, floating tags that move only to a Quality-green `main` commit
 
 ## Prebuilt image

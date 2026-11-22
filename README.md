@@ -1,6 +1,6 @@
 # Toduck
 
-Toduck 1.3.1 is a local-first task inbox. Every toduck has a date. The list stays compact, due dates sit on the right and are colored by when they fall (overdue, tomorrow, this week, next week, next month, future), and tags replace the old category column. It installs as a PWA, and an optional self-hosted server syncs the Web UI with the Android companion.
+Toduck 1.3.2 is a local-first task inbox. Every toduck has a date. The list stays compact, due dates sit on the right and are colored by when they fall (overdue, tomorrow, this week, next week, next month, future), and tags replace the old category column. It installs as a PWA, and an optional self-hosted server syncs the Web UI with the Android companion.
 
 ## Features
 
