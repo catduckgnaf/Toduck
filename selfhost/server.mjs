@@ -446,22 +446,59 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
       : {};
   }
 
+  /**
+   * Is this Origin the same origin as the request's own host? Browsers send
+   * an Origin header on same-origin PUT/POST/PATCH/DELETE, so the bundled
+   * Web UI would otherwise be rejected unless its own origin was
+   * allow-listed (#36). The Host header is the request's own host — a
+   * reverse proxy forwards the public host, so this holds behind one too.
+   * Scheme is not part of the comparison beyond the default port it
+   * implies, because a proxy may terminate TLS in front of a plain-http
+   * server. X-Forwarded-Host is deliberately NOT consulted: any client
+   * can send it, so trusting it would let a foreign origin vouch for
+   * itself. This is only an origin allowlist — every API call still
+   * needs its bearer token, so it grants nothing by itself.
+   */
+  function isSameOrigin(origin, req) {
+    let parsed;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) return false;
+    const defaultPort = parsed.protocol === "https:" ? "443" : "80";
+    const originPort = parsed.port || defaultPort;
+    let host;
+    try {
+      host = new URL(`http://${req.headers.host}`);
+    } catch {
+      return false;
+    }
+    return host.hostname.toLowerCase() === parsed.hostname.toLowerCase() && (host.port || defaultPort) === originPort;
+  }
+
   function originAllowed(req) {
     const origin = req.headers.origin;
-    return !origin || origins.has(origin);
+    return !origin || origins.has(origin) || isSameOrigin(origin, req);
   }
 
   function serveStatic(req, res, pathname) {
     const filePath = resolveStaticPath(staticDir, pathname === "/" ? "/index.html" : pathname);
     if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
       const isAsset = pathname.startsWith("/assets/") || pathname.startsWith("/__grok/");
-      send(res, 200, readFileSync(filePath), contentTypeFor(filePath), { "Cache-Control": isAsset ? "public, max-age=31536000, immutable" : "no-cache" }, req.method === "HEAD");
+      // The SPA shell carries a marker so the Web UI can tell a Toduck
+      // server from any other host serving the same files (#106): the
+      // client probes the shell, which always exists, instead of an
+      // endpoint that may 404 and log a console error.
+      const shellHeaders = filePath.endsWith("index.html") ? { "X-Toduck-Server": "1" } : {};
+      send(res, 200, readFileSync(filePath), contentTypeFor(filePath), { "Cache-Control": isAsset ? "public, max-age=31536000, immutable" : "no-cache", ...shellHeaders }, req.method === "HEAD");
       return true;
     }
     const fallback = join(staticDir, "index.html");
     const assetRequest = pathname.startsWith("/assets/") || pathname.startsWith("/__grok/") || /\.[a-z0-9]+$/i.test(pathname);
     if (assetRequest || !existsSync(fallback)) return false;
-    send(res, 200, readFileSync(fallback), "text/html; charset=utf-8", { "Cache-Control": "no-cache" }, req.method === "HEAD");
+    send(res, 200, readFileSync(fallback), "text/html; charset=utf-8", { "Cache-Control": "no-cache", "X-Toduck-Server": "1" }, req.method === "HEAD");
     return true;
   }
 

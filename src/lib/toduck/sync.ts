@@ -99,6 +99,40 @@ export function normalizeServerUrl(raw: string): string | null {
   }
 }
 
+/**
+ * The origin that served this page, when it is a Toduck server. The
+ * bundled Web UI and the sync API share one origin, so a fresh install
+ * should not have to type that address in (#106): probe the page's own
+ * origin and offer it in Settings. The probe is a HEAD of the page's own
+ * shell (`/`), which always exists — this page loaded from it — so it
+ * never 404s and never logs a console error. A Toduck server marks its
+ * shell with an `X-Toduck-Server` header; anything else (the Vite dev
+ * server, a preview host) serves the same shell unmarked and reads as
+ * "not a Toduck server". The probe never sends a token and never
+ * connects: the token is still entered by hand and checked by the
+ * server before any sync happens, so discovery cannot bypass
+ * authorization.
+ */
+export async function detectSameOriginServer(
+  pageOrigin: string = globalThis.location?.origin ?? "",
+  fetchImpl: typeof fetch = fetch,
+): Promise<string | null> {
+  let origin: URL;
+  try {
+    origin = new URL(pageOrigin);
+  } catch {
+    return null;
+  }
+  if ((origin.protocol !== "http:" && origin.protocol !== "https:") || !origin.hostname) return null;
+  let res: Response;
+  try {
+    res = await fetchImpl(`${origin.origin}/`, { method: "HEAD", signal: AbortSignal.timeout(3000) });
+  } catch {
+    return null;
+  }
+  return res.ok && res.headers.get("x-toduck-server") === "1" ? origin.origin : null;
+}
+
 class ConflictError extends Error {}
 
 async function request(url: string, token: string, path: string, init?: RequestInit): Promise<Response> {

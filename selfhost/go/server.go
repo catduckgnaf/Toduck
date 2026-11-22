@@ -823,6 +823,41 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// isSameOrigin reports whether the request's Origin header names the same
+// origin as the request's own host. Browsers send an Origin header on
+// same-origin PUT/POST/PATCH/DELETE, so the bundled Web UI would otherwise
+// be rejected unless its own origin was allow-listed (#36). The Host header
+// is the request's own host — a reverse proxy forwards the public host, so
+// this holds behind one too. Scheme is not part of the comparison beyond
+// the default port it implies, because a proxy may terminate TLS in front
+// of a plain-http server. X-Forwarded-Host is deliberately NOT consulted:
+// any client can send it, so trusting it would let a foreign origin vouch
+// for itself. This is only an origin allowlist — every API call still
+// needs its bearer token, so it grants nothing by itself.
+func isSameOrigin(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return false
+	}
+	defaultPort := "80"
+	if u.Scheme == "https" {
+		defaultPort = "443"
+	}
+	originPort := u.Port()
+	if originPort == "" {
+		originPort = defaultPort
+	}
+	host, err := url.Parse("http://" + r.Host)
+	if err != nil || host.Hostname() == "" {
+		return false
+	}
+	hostPort := host.Port()
+	if hostPort == "" {
+		hostPort = defaultPort
+	}
+	return strings.EqualFold(host.Hostname(), u.Hostname()) && hostPort == originPort
+}
+
 // unknownAPI answers any /v1 request no route claimed. The API namespace
 // never falls through to the static Web UI shell: a caller without a valid
 // bearer token gets 401 exactly as on a real route, so the response does not
@@ -843,7 +878,7 @@ func (s *server) unknownAPI(w http.ResponseWriter, r *http.Request) {
 func (s *server) originAllowed(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	_, ok := s.origins[origin]
-	return origin == "" || ok
+	return origin == "" || ok || isSameOrigin(origin, r)
 }
 
 func (s *server) cors(w http.ResponseWriter, r *http.Request) {
@@ -1421,6 +1456,13 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 			}
 			w.Header().Set("Cache-Control", cache)
 			w.Header().Set("Content-Type", contentTypeFor(filePath))
+			// The SPA shell carries a marker so the Web UI can tell a
+			// Toduck server from any other host serving the same files
+			// (#106): the client probes the shell, which always exists,
+			// instead of an endpoint that may 404 and log a console error.
+			if filepath.Base(filePath) == "index.html" {
+				w.Header().Set("X-Toduck-Server", "1")
+			}
 			if r.Method == http.MethodHead {
 				w.WriteHeader(http.StatusOK)
 				return true
@@ -1444,6 +1486,7 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	}
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Toduck-Server", "1")
 	if r.Method == http.MethodHead {
 		w.WriteHeader(http.StatusOK)
 		return true

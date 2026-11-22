@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createUser, deleteUser, fetchMe, listUsers, normalizeServerUrl, mergeById, pullDoc, readDoc, syncDoc, updateUser } from "./sync.ts";
+import { createUser, deleteUser, detectSameOriginServer, fetchMe, listUsers, normalizeServerUrl, mergeById, pullDoc, readDoc, syncDoc, updateUser } from "./sync.ts";
 
 test("normalizeServerUrl trims whitespace and handles trailing slashes", () => {
   assert.equal(normalizeServerUrl(""), "");
@@ -9,6 +9,31 @@ test("normalizeServerUrl trims whitespace and handles trailing slashes", () => {
   assert.equal(normalizeServerUrl("https://todo.example.com/api/"), "https://todo.example.com/api");
   assert.equal(normalizeServerUrl("ftp://invalid.com"), null);
   assert.equal(normalizeServerUrl("not-a-url"), null);
+});
+
+test("detectSameOriginServer recognises a Toduck server at the page origin", async () => {
+  const calls: Array<{ url: string; method: string; authorization: string | null }> = [];
+  const todockFetch = (async (input: unknown, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    calls.push({ url: String(input), method: init.method ?? "GET", authorization: headers.get("Authorization") });
+    return new Response(null, { status: 200, headers: { "x-toduck-server": "1" } });
+  }) as unknown as typeof fetch;
+  assert.equal(await detectSameOriginServer("http://nas:8793", todockFetch), "http://nas:8793");
+  assert.deepEqual(calls, [{ url: "http://nas:8793/", method: "HEAD", authorization: null }]);
+
+  const respond = (response: Response | Error) =>
+    (async () => {
+      if (response instanceof Error) throw response;
+      return response;
+    }) as unknown as typeof fetch;
+  // An unmarked shell, a 404, and a failed fetch all read as "not a server".
+  assert.equal(await detectSameOriginServer("http://nas:8793", respond(new Response(null, { status: 200 }))), null);
+  assert.equal(await detectSameOriginServer("http://nas:8793", respond(new Response("nope", { status: 404 }))), null);
+  assert.equal(await detectSameOriginServer("http://nas:8793", respond(new Error("down"))), null);
+  // Non-http origins and unparseable input never probe.
+  assert.equal(await detectSameOriginServer("file:///x", todockFetch), null);
+  assert.equal(await detectSameOriginServer("not a url", todockFetch), null);
+  assert.equal(await detectSameOriginServer("", todockFetch), null);
 });
 
 test("readDoc extracts safe defaults and validates items strictly", () => {
