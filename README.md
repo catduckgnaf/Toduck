@@ -21,6 +21,10 @@ npm run dev
 
 The development app listens on `http://localhost:8080`.
 
+## Offline and install
+
+Toduck installs as a PWA and runs offline after the first load. Each build stamps `sw.js` (`scripts/stamp-sw.mjs`) with a build id and the list of files under `/assets/`; the browser installs the new worker, which precaches the page and every asset, then deletes caches from older builds. Tasks live in browser storage and are never touched by worker updates. A reverse proxy error page (for example a 502 from Caddy) is never cached over the app. Serve `/sw.js` and `/manifest.webmanifest` without a long cache lifetime; the self-host server already does.
+
 ## Quality checks
 
 ```sh

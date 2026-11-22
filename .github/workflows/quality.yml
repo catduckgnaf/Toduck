@@ -43,6 +43,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      # The offline PWA test loads the built app from the self-host server.
+      - run: npm run build
+      - run: node scripts/capture-static-index.mjs
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v4
         if: always()
