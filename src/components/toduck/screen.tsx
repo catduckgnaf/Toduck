@@ -618,9 +618,35 @@ function TaskRow({
           </span>
         </button>
         <div className="min-w-0 flex-1 py-0.5 text-left">
-          <button type="button" className="block w-full truncate text-left" onClick={onOpen} aria-label={`Details for ${task.title}`}>
-            <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
-          </button>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <button
+              type="button"
+              className="min-w-0 flex-[0_1_auto] truncate text-left"
+              onClick={onOpen}
+              aria-label={`Details for ${task.title}`}
+            >
+              <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
+            </button>
+            <div className={`relative shrink-0 rounded px-1 py-0.5 text-xs font-medium tabular-nums whitespace-nowrap ${horizonClass(horizon)}`}>
+              <span aria-hidden="true">{formatWhen(when, today)}</span>
+              <input
+                type="date"
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label={`Change date for ${task.title}, currently ${formatWhen(when, today)}`}
+                value={when}
+                onClick={(event) => {
+                  try {
+                    event.currentTarget.showPicker();
+                  } catch {
+                    // Some browsers already open the picker from the click itself.
+                  }
+                }}
+                onChange={(event) => {
+                  if (event.target.value) moveTask(task.id, event.target.value);
+                }}
+              />
+            </div>
+          </div>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
             <button
               type="button"
@@ -660,25 +686,6 @@ function TaskRow({
           {!compact && notePreviewSafe(task.notes) ? (
             <span className="mt-0.5 hidden truncate text-xs text-faint md:block">{notePreviewSafe(task.notes)}</span>
           ) : null}
-        </div>
-        <div className={`relative shrink-0 pl-2 text-right text-xs font-medium tabular-nums whitespace-nowrap ${horizonClass(horizon)}`}>
-          <span aria-hidden="true">{formatWhen(when, today)}</span>
-          <input
-            type="date"
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            aria-label={`Change date for ${task.title}, currently ${formatWhen(when, today)}`}
-            value={when}
-            onClick={(event) => {
-              try {
-                event.currentTarget.showPicker();
-              } catch {
-                // Some browsers already open the picker from the click itself.
-              }
-            }}
-            onChange={(event) => {
-              if (event.target.value) moveTask(task.id, event.target.value);
-            }}
-          />
         </div>
       </div>
       {projectOpen ? (
