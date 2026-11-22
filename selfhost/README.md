@@ -31,7 +31,22 @@ repository) — first-time GHCR packages are not always public by default.
 * The container runs as the unprivileged `toduck` user and exposes a public `/health` endpoint.
 * State updates require the current ETag in `If-Match`. Stale writers receive `409 Conflict` and clients pull, merge, and retry.
 
-Use TLS when exposing Toduck beyond a trusted private network.
+* The Web UI has **no sign-in screen of its own**, and none is needed to protect your data. Without a server, tasks stay in that browser's own storage on that device. With a server, every read and write goes through the bearer token checks above. Hiding a screen in the browser would protect nothing, so access control lives only on the server.
+* Every `/v1/*` path requires a valid token, including paths that do not exist: an unknown `/v1` path answers `401` without a token and a JSON `404` with one. It never falls through to the Web UI page. Only the static Web UI files and `GET /health` are public, and the Web UI files contain no task data.
+* A personal token stops working the moment its user is deleted, on every route.
+* A request from another origin is refused unless it is listed in `TODUCK_ALLOWED_ORIGINS`, and an allowed origin still has to send a valid token. CORS is never a substitute for the token.
+
+Use TLS when exposing Toduck beyond a trusted private network. The token travels in a header, so without TLS anyone on the path can read it.
+
+### Several people on one server
+
+Use the Users panel in Settings (or `POST /v1/users`) to give each person a personal token, as described under [Users and sharing](#users-and-sharing). Each person pastes their own token into Settings. That is the multi-user sign-in: the token identifies the user, and the server scopes every read and write to what that user owns or was shared. Keep `TODUCK_TOKEN` to yourself; it sees everything and can create and delete users.
+
+To sign someone out for good, delete their user. Disconnecting in Settings only clears the token from that browser.
+
+### Why there is no email and password sign-in
+
+Earlier builds shipped an optional email and password layer behind `VITE_AUTH_ENABLED`. It could not work in this image (the image is static files plus the Go server, so it had no `/api/auth` handler and no database), and it only hid a screen while tasks stayed in browser storage and sync used its own token (issue #102). It was removed instead of being left as a lockout hazard. If password accounts are wanted later, they belong in the server, with the sync API tied to the session, as a new feature.
 
 ## Docker Compose
 

@@ -1,5 +1,4 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import appCss from "../styles.css?url";
 
@@ -131,9 +130,7 @@ export const Route = createRootRoute({
         />
         <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_SCRIPT }} />
         <PreviewHostBridge />
-        <AuthProvider>
           <Outlet />
-        </AuthProvider>
         <Scripts />
       </body>
     </html>

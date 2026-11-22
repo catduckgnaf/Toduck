@@ -106,6 +106,59 @@ export function SectionLabel({ children }: { children: React.ReactNode }) {
   return <h3 className="text-sm font-medium text-muted">{children}</h3>;
 }
 
+/**
+ * Task details live in a right-side pane, not a centered popup: the list
+ * stays visible beside it on wide screens, and on small screens the pane
+ * takes the full width. It is still a dialog (Radix): focus is trapped
+ * inside, Escape closes it, and the title names it for screen readers.
+ * The open/close slide lives in styles.css and is disabled entirely under
+ * prefers-reduced-motion; Radix keeps the pane mounted while the close
+ * animation runs, so closing animates instead of vanishing.
+ */
+export function DetailPane({
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+  title,
+  description,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /**
+   * Where focus goes when the pane closes. Radix restores focus to its own
+   * Dialog.Trigger, but the pane opens from a row button outside the dialog
+   * tree, so the caller supplies the return target here instead.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Portal>
+        <Dialog.Overlay className="modal-overlay" />
+        <Dialog.Content className="detail-pane" onCloseAutoFocus={onCloseAutoFocus}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <Dialog.Title className="font-display text-3xl text-ink">{title}</Dialog.Title>
+              <Dialog.Description className="mt-1 text-sm text-pretty text-muted">{description}</Dialog.Description>
+            </div>
+            <Dialog.Close
+              className="grid size-11 shrink-0 place-items-center rounded-full text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+              aria-label="Close"
+            >
+              <X className="size-5" />
+            </Dialog.Close>
+          </div>
+          <div className="mt-5">{children}</div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export function DateChooser({
   date,
   onChange,
