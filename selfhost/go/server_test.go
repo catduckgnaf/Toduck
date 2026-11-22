@@ -767,3 +767,287 @@ func TestRestTasksUserScopingAndSharing(t *testing.T) {
 		t.Fatalf("bob list after alice delete %+v", listed)
 	}
 }
+
+func createUserWithRole(t *testing.T, base, name, role string) createdUser {
+	t.Helper()
+	body := `{"name":"` + name + `"}`
+	if role != "" {
+		body = `{"name":"` + name + `","role":"` + role + `"}`
+	}
+	res := doRequest(t, http.MethodPost, base+"/v1/users", testToken, body, nil)
+	defer res.Body.Close()
+	if res.StatusCode != 201 {
+		t.Fatalf("create user %q role %q status %d", name, role, res.StatusCode)
+	}
+	var created createdUser
+	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func getStateFull(t *testing.T, base, token string) (map[string]json.RawMessage, int) {
+	t.Helper()
+	res := doRequest(t, http.MethodGet, base+"/v1/state", token, "", nil)
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("get state status %d", res.StatusCode)
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	revision, _ := strconv.Atoi(strings.Trim(res.Header.Get("ETag"), `"`))
+	return body, revision
+}
+
+func decodeIDs(t *testing.T, raw json.RawMessage) []string {
+	t.Helper()
+	var items []map[string]any
+	if err := json.Unmarshal(raw, &items); err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, item := range items {
+		ids = append(ids, item["id"].(string))
+	}
+	return ids
+}
+
+func TestUserRolesAndDisabled(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	admin2 := createUserWithRole(t, server.URL, "Second Admin", "admin")
+	if admin2.Token == "" {
+		t.Fatal("admin user without token")
+	}
+	plain := createUserWithRole(t, server.URL, "Plain", "")
+	directory := doRequest(t, http.MethodGet, server.URL+"/v1/users", testToken, "", nil)
+	defer directory.Body.Close()
+	var users []publicUser
+	json.NewDecoder(directory.Body).Decode(&users)
+	byName := map[string]publicUser{}
+	for _, user := range users {
+		byName[user.Name] = user
+	}
+	if byName["Second Admin"].Role != "admin" || byName["Plain"].Role != "user" {
+		t.Fatalf("directory roles %+v", users)
+	}
+	if byName["Plain"].Disabled {
+		t.Fatalf("new user disabled %+v", byName["Plain"])
+	}
+	// A user-role token cannot manage users; an admin-role one can.
+	forbidden := doRequest(t, http.MethodPost, server.URL+"/v1/users", plain.Token, `{"name":"Nope"}`, nil)
+	defer forbidden.Body.Close()
+	if forbidden.StatusCode != 403 {
+		t.Fatalf("user creating user status %d", forbidden.StatusCode)
+	}
+	allowed := doRequest(t, http.MethodPost, server.URL+"/v1/users", admin2.Token, `{"name":"Made By Admin"}`, nil)
+	defer allowed.Body.Close()
+	if allowed.StatusCode != 201 {
+		t.Fatalf("admin-role user creating user status %d", allowed.StatusCode)
+	}
+	// Invalid role is rejected.
+	bad := doRequest(t, http.MethodPost, server.URL+"/v1/users", testToken, `{"name":"Bad","role":"superuser"}`, nil)
+	defer bad.Body.Close()
+	if bad.StatusCode != 400 {
+		t.Fatalf("bad role status %d", bad.StatusCode)
+	}
+	// Disable the plain user: their token stops working everywhere.
+	patch := doRequest(t, http.MethodPatch, server.URL+"/v1/users/"+plain.ID, testToken, `{"disabled":true}`, nil)
+	defer patch.Body.Close()
+	if patch.StatusCode != 200 {
+		t.Fatalf("disable status %d", patch.StatusCode)
+	}
+	var patched publicUser
+	json.NewDecoder(patch.Body).Decode(&patched)
+	if !patched.Disabled || patched.Role != "user" {
+		t.Fatalf("patched %+v", patched)
+	}
+	for _, target := range []string{"/v1/state", "/v1/me", "/v1/tasks", "/v1/users"} {
+		res := doRequest(t, http.MethodGet, server.URL+target, plain.Token, "", nil)
+		res.Body.Close()
+		if res.StatusCode != 401 {
+			t.Fatalf("disabled token %s status %d", target, res.StatusCode)
+		}
+	}
+	// Non-admins cannot patch users; bad patches are rejected.
+	denied := doRequest(t, http.MethodPatch, server.URL+"/v1/users/"+plain.ID, admin2.Token, `{"disabled":false}`, nil)
+	denied.Body.Close()
+	if denied.StatusCode != 200 {
+		t.Fatalf("admin-role patch status %d", denied.StatusCode)
+	}
+	badPatch := doRequest(t, http.MethodPatch, server.URL+"/v1/users/"+plain.ID, testToken, `{"role":"root"}`, nil)
+	defer badPatch.Body.Close()
+	if badPatch.StatusCode != 400 {
+		t.Fatalf("bad role patch status %d", badPatch.StatusCode)
+	}
+	missing := doRequest(t, http.MethodPatch, server.URL+"/v1/users/does-not-exist", testToken, `{"disabled":true}`, nil)
+	defer missing.Body.Close()
+	if missing.StatusCode != 404 {
+		t.Fatalf("patch missing user status %d", missing.StatusCode)
+	}
+	// Re-enabled, the token works again and /v1/me reports the role.
+	reenabled := doRequest(t, http.MethodGet, server.URL+"/v1/state", plain.Token, "", nil)
+	reenabled.Body.Close()
+	if reenabled.StatusCode != 200 {
+		t.Fatalf("re-enabled token status %d", reenabled.StatusCode)
+	}
+	me := doRequest(t, http.MethodGet, server.URL+"/v1/me", plain.Token, "", nil)
+	defer me.Body.Close()
+	var identity map[string]any
+	json.NewDecoder(me.Body).Decode(&identity)
+	if identity["kind"] != "user" || identity["role"] != "user" || identity["disabled"] != false {
+		t.Fatalf("me %+v", identity)
+	}
+}
+
+func TestUserPutCannotReplaceCategoriesOrProjects(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	cat1 := `{"id":"c1","name":"Home","createdAt":"2026-09-28T00:00:00.000Z","updatedAt":"2026-09-28T00:00:00.000Z"}`
+	proj1 := `{"id":"p1","name":"House","createdAt":"2026-09-28T00:00:00.000Z","updatedAt":"2026-09-28T00:00:00.000Z"}`
+	res := putStateGo(t, server.URL, testToken, 0, `{"tasks":[],"categories":[`+cat1+`],"projects":[`+proj1+`]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("admin seed %d", res.StatusCode)
+	}
+	// Alice renames c1, drops p1, and adds her own c2/p2.
+	cat1Renamed := `{"id":"c1","name":"Renamed by Alice","createdAt":"2026-09-28T00:00:00.000Z","updatedAt":"2026-09-28T00:00:00.000Z"}`
+	cat2 := `{"id":"c2","name":"Alice tag","createdAt":"2026-09-28T00:00:00.000Z","updatedAt":"2026-09-28T00:00:00.000Z"}`
+	proj2 := `{"id":"p2","name":"Alice project","createdAt":"2026-09-28T00:00:00.000Z","updatedAt":"2026-09-28T00:00:00.000Z"}`
+	res = putStateGo(t, server.URL, alice.Token, 1, `{"tasks":[],"categories":[`+cat1Renamed+`,`+cat2+`],"projects":[`+proj2+`]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice put %d", res.StatusCode)
+	}
+	state, _ := getStateFull(t, server.URL, testToken)
+	var categories []map[string]any
+	json.Unmarshal(state["categories"], &categories)
+	if len(categories) != 2 || categories[0]["name"] != "Home" || categories[1]["name"] != "Alice tag" {
+		t.Fatalf("categories after alice put %+v", categories)
+	}
+	var projects []map[string]any
+	json.Unmarshal(state["projects"], &projects)
+	if len(projects) != 2 || projects[0]["name"] != "House" || projects[1]["name"] != "Alice project" {
+		t.Fatalf("projects after alice put %+v", projects)
+	}
+	// The admin token still replaces wholesale.
+	res = putStateGo(t, server.URL, testToken, 2, `{"tasks":[],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("admin wipe %d", res.StatusCode)
+	}
+	state, _ = getStateFull(t, server.URL, testToken)
+	if string(state["categories"]) != "[]" || string(state["projects"]) != "[]" {
+		t.Fatalf("admin put did not replace: %s %s", state["categories"], state["projects"])
+	}
+}
+
+func TestDeleteUserBumpsRevisionAndReassignsTasks(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	bob := createUserGo(t, server.URL, "Bob")
+	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Alice task", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice put %d", res.StatusCode)
+	}
+	_, revision := getStateFull(t, server.URL, testToken)
+	del := doRequest(t, http.MethodDelete, server.URL+"/v1/users/"+alice.ID, testToken, "", nil)
+	defer del.Body.Close()
+	if del.StatusCode != 200 {
+		t.Fatalf("delete alice %d", del.StatusCode)
+	}
+	var deleted map[string]any
+	json.NewDecoder(del.Body).Decode(&deleted)
+	if deleted["revision"] != float64(revision+1) {
+		t.Fatalf("delete revision %+v want %d", deleted, revision+1)
+	}
+	// Alice's task survives, now unowned (the admin's), still shared with Bob.
+	state, newRevision := getStateFull(t, server.URL, testToken)
+	if newRevision != revision+1 {
+		t.Fatalf("revision %d want %d", newRevision, revision+1)
+	}
+	var tasks []map[string]any
+	json.Unmarshal(state["tasks"], &tasks)
+	if len(tasks) != 1 || tasks[0]["ownerId"] != nil {
+		t.Fatalf("alice task after delete %+v", tasks)
+	}
+	if got := tasks[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
+		t.Fatalf("sharedWith after delete %v", tasks[0]["sharedWith"])
+	}
+	// A stale client PUT with the pre-delete revision gets 409, so it
+	// cannot write Alice's id back into sharedWith.
+	stale := putStateGo(t, server.URL, testToken, revision, `{"tasks":[],"categories":[],"projects":[]}`)
+	defer stale.Body.Close()
+	if stale.StatusCode != 409 {
+		t.Fatalf("stale put status %d", stale.StatusCode)
+	}
+	// Even an admin PUT naming the removed id has it sanitized away.
+	shared := taskJSON("a1", "Alice task", "", []string{alice.ID, bob.ID})
+	res = putStateGo(t, server.URL, testToken, newRevision, `{"tasks":[`+shared+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("admin rewrite %d", res.StatusCode)
+	}
+	state, _ = getStateFull(t, server.URL, testToken)
+	var rewritten []map[string]any
+	json.Unmarshal(state["tasks"], &rewritten)
+	if got := rewritten[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
+		t.Fatalf("removed id written back: %v", rewritten[0]["sharedWith"])
+	}
+}
+
+func TestSharedUserCannotUndeleteTombstonedTask(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	bob := createUserGo(t, server.URL, "Bob")
+	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Shared", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice put %d", res.StatusCode)
+	}
+	// Alice tombstones her task.
+	_, revision := getStateFull(t, server.URL, testToken)
+	tombstone := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
+	var parsed map[string]any
+	json.Unmarshal([]byte(tombstone), &parsed)
+	parsed["deleted"] = true
+	tombRaw, _ := json.Marshal(parsed)
+	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+string(tombRaw)+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice tombstone %d", res.StatusCode)
+	}
+	// Bob syncs a stale live copy: the tombstone must stand.
+	_, revision = getStateFull(t, server.URL, testToken)
+	live := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
+	res = putStateGo(t, server.URL, bob.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("bob resurrect put %d", res.StatusCode)
+	}
+	state, _ := getStateFull(t, server.URL, testToken)
+	var tasks []map[string]any
+	json.Unmarshal(state["tasks"], &tasks)
+	if len(tasks) != 1 || tasks[0]["deleted"] != true {
+		t.Fatalf("tombstone resurrected %+v", tasks)
+	}
+	// The owner themself may still undelete it.
+	_, revision = getStateFull(t, server.URL, testToken)
+	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice undelete %d", res.StatusCode)
+	}
+	state, _ = getStateFull(t, server.URL, testToken)
+	var undeleted []map[string]any
+	json.Unmarshal(state["tasks"], &undeleted)
+	if deleted, _ := undeleted[0]["deleted"].(bool); deleted {
+		t.Fatalf("owner could not undelete %+v", undeleted)
+	}
+}

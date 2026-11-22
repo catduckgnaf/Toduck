@@ -1,4 +1,4 @@
-import { pendingMigrations } from "../../scripts/migration-plan.mjs";
+import { listMigrationFiles, pendingMigrations } from "../../scripts/migration-plan.mjs";
 
 /** Which database backend is active. */
 export type DbSource = "neon" | "pglite";
@@ -129,19 +129,41 @@ async function createPgliteSql(): Promise<Sql> {
   });
   const pg = await globalRef.__pgliteInstance__;
 
-  // Apply migrations/ (the single schema source) so preview matches production.
-  // SQL is inlined by the bundler via import.meta.glob (no runtime fs); applied
-  // files are tracked in _migrations. The glob does not descend, so the opt-in
-  // auth schema under migrations/auth/ stays out. Runs once per module instance
-  // — so an HMR reload after adding a migration file applies it live — with
+  // Apply migrations/ (the single schema source, subdirectories included)
+  // so preview matches production. SQL is inlined by the bundler via
+  // import.meta.glob (no runtime fs); applied files are tracked in
+  // _migrations by basename, so a file present both at the top level and
+  // under a subdirectory applies once. Runs once per module instance — so
+  // an HMR reload after adding a migration file applies it live — with
   // passes serialized on a global chain so concurrent callers never
-  // double-apply.
+  // double-apply. Under plain Node (node --test, scripts) there is no
+  // bundler glob, so the files are read from disk instead.
   const migrate = async (): Promise<void> => {
-    const migrations = import.meta.glob("/migrations/*.sql", {
-      query: "?raw",
-      import: "default",
-      eager: true,
-    }) as Record<string, string>;
+    let migrations: Record<string, string>;
+    try {
+      migrations = import.meta.glob("/migrations/**/*.sql", {
+        query: "?raw",
+        import: "default",
+        eager: true,
+      }) as Record<string, string>;
+    } catch {
+      const { readFile } = await import("node:fs/promises");
+      const { fileURLToPath } = await import("node:url");
+      const { join, dirname } = await import("node:path");
+      const migrationsDir = join(
+        dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "..",
+        "migrations",
+      );
+      migrations = {};
+      for (const rel of await listMigrationFiles(migrationsDir)) {
+        migrations[`/migrations/${rel}`] = await readFile(
+          join(migrationsDir, rel),
+          "utf8",
+        );
+      }
+    }
     const doneRows = await pg.query<{ name: string }>(
       "select name from _migrations",
     );
@@ -183,8 +205,9 @@ async function createSql(): Promise<Sql> {
  * Get the shared, **server-only** SQL client. Neon when `DATABASE_URL` is set,
  * otherwise the local PGLite fallback. Memoized — safe to call per request.
  *
- * Schema comes from `migrations/*.sql`, auto-applied before the first query on
- * both backends — define tables there, never inline in server functions.
+ * Schema comes from `migrations/` (subdirectories included), auto-applied
+ * before the first query on both backends — define tables there, never inline
+ * in server functions.
  */
 export function getSql(): Promise<Sql> {
   sqlPromise ??= createSql().catch((err) => {

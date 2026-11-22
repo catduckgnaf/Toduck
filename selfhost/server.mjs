@@ -37,6 +37,17 @@ function isUserRecord(value) {
   );
 }
 
+/**
+ * Roles (#107): "admin" users may manage users; "user" is the default.
+ * Records written before roles existed read as user/enabled, so existing
+ * single-user state migrates on first load without wiping anything.
+ */
+function normalizeUserRecord(value) {
+  const role = value.role === undefined ? "user" : value.role;
+  if (role !== "admin" && role !== "user") throw new Error("State user role must be admin or user.");
+  return { id: value.id, name: value.name, tokenHash: value.tokenHash, role, disabled: value.disabled === true };
+}
+
 function normalizeState(value) {
   if (!value || typeof value !== "object") throw new Error("State must be an object.");
   if (!Array.isArray(value.tasks) || !Array.isArray(value.categories)) throw new Error("State must include tasks and categories arrays.");
@@ -52,7 +63,7 @@ function normalizeState(value) {
     tasks: value.tasks,
     categories: value.categories,
     projects: value.projects ?? [],
-    users: value.users ?? [],
+    users: (value.users ?? []).map(normalizeUserRecord),
   };
 }
 
@@ -60,9 +71,18 @@ export function hashToken(token) {
   return createHash("sha256").update(String(token)).digest("hex");
 }
 
-/** Names and ids only — never token hashes. */
+/** Names, ids and roles only — never token hashes. */
 function publicUsers(state) {
-  return state.users.map((user) => ({ id: user.id, name: user.name }));
+  return state.users.map((user) => ({ id: user.id, name: user.name, role: user.role ?? "user", disabled: user.disabled === true }));
+}
+
+function publicUser(user) {
+  return { id: user.id, name: user.name, role: user.role ?? "user", disabled: user.disabled === true };
+}
+
+/** The admin token, or a personal token with the admin role, may manage users. */
+function isManager(auth) {
+  return auth.kind === "admin" || auth.user?.role === "admin";
 }
 
 function taskOwnerId(task) {
@@ -204,6 +224,38 @@ function sanitizeSharedWith(value, state) {
 }
 
 /**
+ * Merge shared items (categories/projects) by id (#45): a user token's
+ * PUT keeps every stored entry exactly and only adds entries with ids
+ * the stored state has never seen — it can never rename or delete an
+ * entry it does not own. Entries without a string id are dropped.
+ */
+function mergeSharedItems(stored, incoming) {
+  const seen = new Set(stored.map((item) => item?.id));
+  const merged = [...stored];
+  for (const item of incoming ?? []) {
+    if (!item || typeof item.id !== "string" || seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(item);
+  }
+  return merged;
+}
+
+/**
+ * Drop references to users who no longer exist from an admin PUT's tasks
+ * (#50): sharedWith entries naming a removed user are dropped, and an
+ * ownerId naming a removed user is cleared so the task falls back to the
+ * admin instead of being orphaned again.
+ */
+function sanitizeTasksSharedWith(tasks, state) {
+  const known = new Set(state.users.map((user) => user.id));
+  return tasks.map((task) => ({
+    ...task,
+    ownerId: taskOwnerId(task) !== null && !known.has(taskOwnerId(task)) ? null : taskOwnerId(task),
+    sharedWith: sanitizeSharedWith(taskSharedWith(task), state),
+  }));
+}
+
+/**
  * Merge a user token's PUT into the stored state. The requester only ever
  * sees tasks they own or that are shared with them, so:
  * - tasks they cannot see are preserved exactly as stored;
@@ -237,6 +289,13 @@ function mergeUserState(state, parsed, userId) {
     }
     handled.add(stored.id);
     const isOwner = taskOwnerId(stored) === userId;
+    // A shared user can never resurrect the owner's tombstoned task: a
+    // live copy from them is ignored and the tombstone stands (#51). The
+    // owner themself may still undelete their own task.
+    if (!isOwner && stored.deleted) {
+      tasks.push(stored);
+      continue;
+    }
     // A shared user cannot delete the owner's task: a tombstone from them
     // is ignored (the Web client deletes by tombstone, not by omission).
     if (!isOwner && incoming.deleted && !stored.deleted) {
@@ -258,11 +317,13 @@ function mergeUserState(state, parsed, userId) {
     handled.add(incoming.id);
     tasks.push({ ...incoming, ownerId: userId, sharedWith: sanitizeSharedWith(incoming.sharedWith, state) });
   }
+  // Categories and projects are shared, not owned: a user token's PUT
+  // merges them by id (#45) instead of replacing them wholesale.
   return {
     revision: state.revision + 1,
     tasks,
-    categories: parsed.categories,
-    projects: parsed.projects ?? state.projects,
+    categories: mergeSharedItems(state.categories, parsed.categories),
+    projects: parsed.projects === undefined ? state.projects : mergeSharedItems(state.projects, parsed.projects),
     users: state.users,
   };
 }
@@ -328,6 +389,9 @@ function authenticate(state, configuredToken, authorization) {
   const suppliedHash = hashToken(bearerToken(authorization));
   const suppliedDigest = Buffer.from(suppliedHash, "utf8");
   for (const user of state.users) {
+    // A disabled user's token stops working everywhere, until an admin
+    // re-enables them.
+    if (user.disabled === true) continue;
     const storedDigest = Buffer.from(user.tokenHash, "utf8");
     if (storedDigest.length === suppliedDigest.length && timingSafeEqual(storedDigest, suppliedDigest)) {
       return { kind: "user", user };
@@ -430,7 +494,7 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 403, JSON.stringify({ error: "Origin not allowed" }));
         return;
       }
-      send(res, 204, "", "text/plain", { ...corsHeaders(req), "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS" });
+      send(res, 204, "", "text/plain", { ...corsHeaders(req), "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS" });
       return;
     }
 
@@ -445,7 +509,7 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 401, JSON.stringify({ error: "Unauthorized" }), undefined, headers);
         return;
       }
-      send(res, 200, JSON.stringify(auth.kind === "admin" ? { kind: "admin" } : { kind: "user", id: auth.user.id, name: auth.user.name }), undefined, headers);
+      send(res, 200, JSON.stringify(auth.kind === "admin" ? { kind: "admin", role: "admin" } : { kind: "user", id: auth.user.id, name: auth.user.name, role: auth.user.role ?? "user", disabled: auth.user.disabled === true }), undefined, headers);
       return;
     }
 
@@ -475,8 +539,8 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 401, JSON.stringify({ error: "Unauthorized" }), undefined, headers);
         return;
       }
-      if (auth.kind !== "admin") {
-        send(res, 403, JSON.stringify({ error: "Only the admin can create users" }), undefined, headers);
+      if (!isManager(auth)) {
+        send(res, 403, JSON.stringify({ error: "Only an admin can create users" }), undefined, headers);
         return;
       }
       let rawBody = "";
@@ -488,32 +552,117 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, status, JSON.stringify({ error: status === 413 ? "Request body too large" : "Invalid request" }), undefined, headers);
         return;
       }
-      let name = "";
+      let parsedBody;
       try {
-        name = String(JSON.parse(rawBody)?.name ?? "").trim().slice(0, 80);
+        parsedBody = JSON.parse(rawBody);
       } catch {
         send(res, 400, JSON.stringify({ error: "Invalid JSON" }), undefined, headers);
         return;
       }
+      const name = typeof parsedBody?.name === "string" ? parsedBody.name.trim().slice(0, 80) : "";
       if (!name) {
         send(res, 400, JSON.stringify({ error: "A user name is required" }), undefined, headers);
+        return;
+      }
+      const role = parsedBody?.role === undefined ? "user" : parsedBody.role;
+      if (role !== "admin" && role !== "user") {
+        send(res, 400, JSON.stringify({ error: "role must be admin or user" }), undefined, headers);
         return;
       }
       // The raw personal token is returned once, here; only its SHA-256
       // hash is ever stored.
       const personalToken = randomBytes(32).toString("base64url");
-      const record = { id: randomUUID(), name, tokenHash: hashToken(personalToken) };
+      const record = { id: randomUUID(), name, tokenHash: hashToken(personalToken), role, disabled: false };
       try {
         await mutateUsers((current) => ({ nextState: { ...current, users: [...current.users, record] }, value: record }));
       } catch {
         send(res, 500, JSON.stringify({ error: "Failed to persist state" }), undefined, headers);
         return;
       }
-      send(res, 201, JSON.stringify({ id: record.id, name: record.name, token: personalToken }), undefined, headers);
+      send(res, 201, JSON.stringify({ id: record.id, name: record.name, token: personalToken, role: record.role }), undefined, headers);
       return;
     }
 
     const userDeleteMatch = /^\/v1\/users\/([^/]+)$/.exec(url.pathname);
+    if (userDeleteMatch && req.method === "PATCH") {
+      if (!originAllowed(req)) {
+        send(res, 403, JSON.stringify({ error: "Origin not allowed" }));
+        return;
+      }
+      const headers = corsHeaders(req);
+      const auth = authenticate(state, configuredToken, req.headers.authorization);
+      if (!auth) {
+        send(res, 401, JSON.stringify({ error: "Unauthorized" }), undefined, headers);
+        return;
+      }
+      if (!isManager(auth)) {
+        send(res, 403, JSON.stringify({ error: "Only an admin can change users" }), undefined, headers);
+        return;
+      }
+      const targetId = decodeURIComponent(userDeleteMatch[1]);
+      let rawBody = "";
+      try {
+        rawBody = await readBody(req, maxBody);
+      } catch (error) {
+        req.resume();
+        const status = error?.statusCode === 413 ? 413 : 400;
+        send(res, status, JSON.stringify({ error: status === 413 ? "Request body too large" : "Invalid request" }), undefined, headers);
+        return;
+      }
+      let parsedBody;
+      try {
+        parsedBody = JSON.parse(rawBody);
+      } catch {
+        send(res, 400, JSON.stringify({ error: "Invalid JSON" }), undefined, headers);
+        return;
+      }
+      const updates = {};
+      if (parsedBody?.name !== undefined) {
+        const name = typeof parsedBody.name === "string" ? parsedBody.name.trim().slice(0, 80) : "";
+        if (!name) {
+          send(res, 400, JSON.stringify({ error: "A user name is required" }), undefined, headers);
+          return;
+        }
+        updates.name = name;
+      }
+      if (parsedBody?.role !== undefined) {
+        if (parsedBody.role !== "admin" && parsedBody.role !== "user") {
+          send(res, 400, JSON.stringify({ error: "role must be admin or user" }), undefined, headers);
+          return;
+        }
+        updates.role = parsedBody.role;
+      }
+      if (parsedBody?.disabled !== undefined) {
+        if (typeof parsedBody.disabled !== "boolean") {
+          send(res, 400, JSON.stringify({ error: "disabled must be a boolean" }), undefined, headers);
+          return;
+        }
+        updates.disabled = parsedBody.disabled;
+      }
+      if (Object.keys(updates).length === 0) {
+        send(res, 400, JSON.stringify({ error: "Nothing to update" }), undefined, headers);
+        return;
+      }
+      try {
+        const updated = await mutateUsers((current) => {
+          const index = current.users.findIndex((user) => user.id === targetId);
+          if (index < 0) return undefined;
+          const users = [...current.users];
+          users[index] = { ...users[index], ...updates };
+          return { nextState: { ...current, users }, value: publicUser(users[index]) };
+        });
+        if (!updated) {
+          send(res, 404, JSON.stringify({ error: "User not found" }), undefined, headers);
+          return;
+        }
+        send(res, 200, JSON.stringify(updated), undefined, headers);
+      } catch {
+        send(res, 500, JSON.stringify({ error: "Failed to persist state" }), undefined, headers);
+        return;
+      }
+      return;
+    }
+
     if (userDeleteMatch && req.method === "DELETE") {
       if (!originAllowed(req)) {
         send(res, 403, JSON.stringify({ error: "Origin not allowed" }));
@@ -525,8 +674,8 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 401, JSON.stringify({ error: "Unauthorized" }), undefined, headers);
         return;
       }
-      if (auth.kind !== "admin") {
-        send(res, 403, JSON.stringify({ error: "Only the admin can delete users" }), undefined, headers);
+      if (!isManager(auth)) {
+        send(res, 403, JSON.stringify({ error: "Only an admin can delete users" }), undefined, headers);
         return;
       }
       const targetId = decodeURIComponent(userDeleteMatch[1]);
@@ -536,13 +685,24 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
           return {
             nextState: {
               ...current,
+              // Deleting a user is a state change other clients must see:
+              // the revision bumps so a stale client cannot PUT against
+              // the pre-delete revision and write the id back (#50).
+              revision: current.revision + 1,
               users: current.users.filter((user) => user.id !== targetId),
-              // Revoking a user also unshares everything shared with them.
-              tasks: current.tasks.map((task) =>
-                taskSharedWith(task).includes(targetId)
-                  ? { ...task, sharedWith: taskSharedWith(task).filter((id) => id !== targetId) }
-                  : task,
-              ),
+              // The deleted user's own tasks are reassigned to the admin
+              // (ownerId null) instead of being orphaned with a dead
+              // owner; everything shared with them is unshared.
+              tasks: current.tasks.map((task) => {
+                const owned = taskOwnerId(task) === targetId;
+                const shared = taskSharedWith(task).includes(targetId);
+                if (!owned && !shared) return task;
+                return {
+                  ...task,
+                  ownerId: owned ? null : taskOwnerId(task),
+                  sharedWith: shared ? taskSharedWith(task).filter((id) => id !== targetId) : taskSharedWith(task),
+                };
+              }),
             },
             value: true,
           };
@@ -555,7 +715,7 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 500, JSON.stringify({ error: "Failed to persist state" }), undefined, headers);
         return;
       }
-      send(res, 200, JSON.stringify({ ok: true }), undefined, headers);
+      send(res, 200, JSON.stringify({ ok: true, revision: state.revision }), undefined, headers);
       return;
     }
 
@@ -792,11 +952,13 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         // array; keep the stored projects instead of wiping them.
         // The admin token keeps whole-state semantics; a personal token's
         // payload is merged in scoped to that user (see mergeUserState).
+        // An admin PUT still drops references to users who no longer
+        // exist (#50) instead of resurrecting them.
         const nextState =
           auth.kind === "admin"
             ? {
                 revision: state.revision + 1,
-                tasks: parsed.tasks,
+                tasks: sanitizeTasksSharedWith(parsed.tasks, state),
                 categories: parsed.categories,
                 projects: parsed.projects ?? state.projects,
                 users: state.users,

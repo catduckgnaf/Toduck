@@ -223,10 +223,10 @@ test("admin creates users; only the token hash is stored and the raw token is sh
     assert.equal(stored.users[0].id, created.id);
     assert.match(stored.users[0].tokenHash, /^[0-9a-f]{64}$/);
 
-    // The directory lists names/ids only, for any authenticated caller.
+    // The directory lists names/ids/roles only, for any authenticated caller.
     const asUser = await fetch(`${url}/v1/users`, { headers: bearer(created.token) });
     assert.equal(asUser.status, 200);
-    assert.deepEqual(await asUser.json(), [{ id: created.id, name: "Teammate" }]);
+    assert.deepEqual(await asUser.json(), [{ id: created.id, name: "Teammate", role: "user", disabled: false }]);
     assert.equal((await fetch(`${url}/v1/users`)).status, 401);
 
     // A user token cannot create users; /v1/me reports who a token is.
@@ -240,8 +240,10 @@ test("admin creates users; only the token hash is stored and the raw token is sh
       kind: "user",
       id: created.id,
       name: "Teammate",
+      role: "user",
+      disabled: false,
     });
-    assert.deepEqual(await (await fetch(`${url}/v1/me`, { headers: auth() })).json(), { kind: "admin" });
+    assert.deepEqual(await (await fetch(`${url}/v1/me`, { headers: auth() })).json(), { kind: "admin", role: "admin" });
   });
 });
 
@@ -524,5 +526,210 @@ test("projects round-trip, and payloads without projects still work and do not w
   await withServer(async ({ url }) => {
     const body = await (await fetch(`${url}/v1/state`, { headers: auth() })).json();
     assert.deepEqual(body.projects, []);
+  });
+});
+
+async function createUserWithRole(url, name, role) {
+  const response = await fetch(`${url}/v1/users`, {
+    method: "POST",
+    headers: { ...auth(), "Content-Type": "application/json" },
+    body: JSON.stringify({ name, role }),
+  });
+  assert.equal(response.status, 201, `create ${name} as ${role}`);
+  return response.json();
+}
+
+test("roles: admin-role users manage users, user-role users cannot, disabled users get 401", async () => {
+  await withServer(async ({ url }) => {
+    const secondAdmin = await createUserWithRole(url, "Second Admin", "admin");
+    assert.equal(secondAdmin.role, "admin");
+    const plain = await createUserWithRole(url, "Plain", "user");
+    assert.equal(plain.role, "user");
+    const defaulted = await createUser(url, "Defaulted");
+    assert.equal(defaulted.role, "user");
+
+    const directory = await (await fetch(`${url}/v1/users`, { headers: auth() })).json();
+    const byName = Object.fromEntries(directory.map((user) => [user.name, user]));
+    assert.equal(byName["Second Admin"].role, "admin");
+    assert.equal(byName["Plain"].role, "user");
+    assert.equal(byName["Defaulted"].role, "user");
+    assert.equal(byName["Plain"].disabled, false);
+
+    // A user-role token cannot create users; an admin-role one can.
+    const forbidden = await fetch(`${url}/v1/users`, {
+      method: "POST",
+      headers: { ...bearer(plain.token), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Nope" }),
+    });
+    assert.equal(forbidden.status, 403);
+    const allowed = await fetch(`${url}/v1/users`, {
+      method: "POST",
+      headers: { ...bearer(secondAdmin.token), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Made By Admin" }),
+    });
+    assert.equal(allowed.status, 201);
+
+    // Invalid roles are rejected at create and at patch.
+    const badCreate = await fetch(`${url}/v1/users`, {
+      method: "POST",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Bad", role: "superuser" }),
+    });
+    assert.equal(badCreate.status, 400);
+    const badPatch = await fetch(`${url}/v1/users/${plain.id}`, {
+      method: "PATCH",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ role: "root" }),
+    });
+    assert.equal(badPatch.status, 400);
+    const missing = await fetch(`${url}/v1/users/does-not-exist`, {
+      method: "PATCH",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: true }),
+    });
+    assert.equal(missing.status, 404);
+    const empty = await fetch(`${url}/v1/users/${plain.id}`, {
+      method: "PATCH",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(empty.status, 400);
+
+    // Disable the plain user: their token stops working everywhere.
+    const patched = await fetch(`${url}/v1/users/${plain.id}`, {
+      method: "PATCH",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: true }),
+    });
+    assert.equal(patched.status, 200);
+    assert.deepEqual(await patched.json(), { id: plain.id, name: "Plain", role: "user", disabled: true });
+    for (const path of ["/v1/state", "/v1/me", "/v1/tasks", "/v1/users"]) {
+      assert.equal((await fetch(`${url}${path}`, { headers: bearer(plain.token) })).status, 401, path);
+    }
+    // A non-admin cannot patch users; an admin-role user can re-enable.
+    assert.equal(
+      (await fetch(`${url}/v1/users/${plain.id}`, {
+        method: "PATCH",
+        headers: { ...bearer(defaulted.token), "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: false }),
+      })).status,
+      403,
+    );
+    const reenabled = await fetch(`${url}/v1/users/${plain.id}`, {
+      method: "PATCH",
+      headers: { ...bearer(secondAdmin.token), "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: false }),
+    });
+    assert.equal(reenabled.status, 200);
+    assert.equal((await fetch(`${url}/v1/state`, { headers: bearer(plain.token) })).status, 200);
+    assert.deepEqual(await (await fetch(`${url}/v1/me`, { headers: bearer(plain.token) })).json(), {
+      kind: "user",
+      id: plain.id,
+      name: "Plain",
+      role: "user",
+      disabled: false,
+    });
+  });
+});
+
+test("a user PUT cannot replace categories or projects (#45)", async () => {
+  await withServer(async ({ url }) => {
+    const alice = await createUser(url, "Alice");
+    const cat1 = { id: "c1", name: "Home", createdAt: stamp, updatedAt: stamp };
+    const proj1 = { id: "p1", name: "House", createdAt: stamp, updatedAt: stamp };
+    let res = await putState(url, TOKEN, 0, { tasks: [], categories: [cat1], projects: [proj1] });
+    assert.equal(res.status, 200);
+    // Alice renames c1, drops p1, and adds her own c2/p2.
+    const cat1Renamed = { ...cat1, name: "Renamed by Alice" };
+    const cat2 = { id: "c2", name: "Alice tag", createdAt: stamp, updatedAt: stamp };
+    const proj2 = { id: "p2", name: "Alice project", createdAt: stamp, updatedAt: stamp };
+    res = await putState(url, alice.token, 1, { tasks: [], categories: [cat1Renamed, cat2], projects: [proj2] });
+    assert.equal(res.status, 200);
+    let state = await getState(url, TOKEN);
+    assert.deepEqual(state.body.categories.map((c) => c.name), ["Home", "Alice tag"]);
+    assert.deepEqual(state.body.projects.map((p) => p.name), ["House", "Alice project"]);
+    // The admin token still replaces wholesale.
+    res = await putState(url, TOKEN, state.revision, { tasks: [], categories: [], projects: [] });
+    assert.equal(res.status, 200);
+    state = await getState(url, TOKEN);
+    assert.deepEqual(state.body.categories, []);
+    assert.deepEqual(state.body.projects, []);
+  });
+});
+
+test("deleting a user bumps the revision and reassigns their tasks to the admin (#50)", async () => {
+  await withServer(async ({ url }) => {
+    const alice = await createUser(url, "Alice");
+    const bob = await createUser(url, "Bob");
+    let res = await putState(url, alice.token, 0, {
+      tasks: [makeTask("a1", "Alice task", { ownerId: alice.id, sharedWith: [bob.id] })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    const before = await getState(url, TOKEN);
+    const deleted = await fetch(`${url}/v1/users/${alice.id}`, { method: "DELETE", headers: auth() });
+    assert.equal(deleted.status, 200);
+    assert.deepEqual(await deleted.json(), { ok: true, revision: before.revision + 1 });
+    const after = await getState(url, TOKEN);
+    assert.equal(after.revision, before.revision + 1);
+    const task = after.body.tasks.find((t) => t.id === "a1");
+    assert.equal(task.ownerId, null);
+    assert.deepEqual(task.sharedWith, [bob.id]);
+    // A stale client PUT with the pre-delete revision gets 409, so it
+    // cannot write Alice's id back into sharedWith.
+    const stale = await putState(url, TOKEN, before.revision, { tasks: [], categories: [], projects: [] });
+    assert.equal(stale.status, 409);
+    // Even an admin PUT naming the removed id has it sanitized away.
+    res = await putState(url, TOKEN, after.revision, {
+      tasks: [makeTask("a1", "Alice task", { ownerId: alice.id, sharedWith: [alice.id, bob.id] })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    const rewritten = await getState(url, TOKEN);
+    const again = rewritten.body.tasks.find((t) => t.id === "a1");
+    assert.equal(again.ownerId, null);
+    assert.deepEqual(again.sharedWith, [bob.id]);
+  });
+});
+
+test("a shared user cannot undelete the owner's tombstoned task (#51)", async () => {
+  await withServer(async ({ url }) => {
+    const alice = await createUser(url, "Alice");
+    const bob = await createUser(url, "Bob");
+    let res = await putState(url, alice.token, 0, {
+      tasks: [makeTask("a1", "Shared", { ownerId: alice.id, sharedWith: [bob.id] })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    let view = await getState(url, TOKEN);
+    // Alice tombstones her task.
+    res = await putState(url, alice.token, view.revision, {
+      tasks: [makeTask("a1", "Shared", { ownerId: alice.id, sharedWith: [bob.id], deleted: true })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    // Bob syncs a stale live copy: the tombstone must stand.
+    view = await getState(url, TOKEN);
+    res = await putState(url, bob.token, view.revision, {
+      tasks: [makeTask("a1", "Shared", { ownerId: alice.id, sharedWith: [bob.id] })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    view = await getState(url, TOKEN);
+    assert.equal(view.body.tasks.find((t) => t.id === "a1").deleted, true);
+    // The owner themself may still undelete it.
+    res = await putState(url, alice.token, view.revision, {
+      tasks: [makeTask("a1", "Shared", { ownerId: alice.id, sharedWith: [bob.id] })],
+      categories: [],
+      projects: [],
+    });
+    assert.equal(res.status, 200);
+    view = await getState(url, TOKEN);
+    assert.equal(view.body.tasks.find((t) => t.id === "a1").deleted, undefined);
   });
 });

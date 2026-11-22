@@ -1,11 +1,27 @@
-import { createFileRoute, Navigate } from "@tanstack/react-router";
+import { createFileRoute, Navigate, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { ToduckScreen, ToduckShell } from "@/components/toduck/screen";
 import { bootToduck, useToduck } from "@/lib/toduck/store";
 import { authEnabled } from "@/lib/auth/client";
+import { requireSignedIn } from "@/lib/auth/require-signed-in";
 import { useCurrentUserState } from "@/lib/auth/use-current-user";
 
-export const Route = createFileRoute("/")({ component: Home });
+export const Route = createFileRoute("/")({
+  component: Home,
+  // Server-side sign-in gate (#102): the client `<Navigate>` below is only a
+  // UX layer. With auth on, the loader verifies the session on the server and
+  // redirects to /login when there is none — a client gate alone can be
+  // bypassed. With auth off there is nothing to verify.
+  loader: async () => {
+    if (!authEnabled) return null;
+    try {
+      await requireSignedIn();
+    } catch {
+      throw redirect({ to: "/login" });
+    }
+    return null;
+  },
+});
 
 function Home() {
   const hydrated = useToduck((s) => s.hasHydrated);

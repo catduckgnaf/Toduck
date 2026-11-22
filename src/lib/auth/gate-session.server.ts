@@ -59,9 +59,8 @@ async function emitSessionCookie(
     sessionTokenName,
   )?.value;
   if (!sessionValue) {
-    console.error(`${LOG} signed Set-Cookie missing session token value`, {
-      cookiePreview: signedCookie.slice(0, 120),
-    });
+    // Never log the signed cookie itself — it is a bearer credential.
+    console.error(`${LOG} signed Set-Cookie missing session token value`);
     return null;
   }
 
@@ -97,11 +96,11 @@ async function emitSessionCookie(
 }
 
 /**
- * Expire the previous user's `session_data` cookie cache after an identity
- * swap. The cache is signed against the old session and outlives it (5-min
- * TTL), so without this `/get-session` keeps serving the replaced user.
- * Mirrors `emitSessionCookie`'s dual-path delivery: TanStack's response
- * cookie store plus Better Auth's `responseHeaders` bag.
+ * Expire the previous user's `session_data` cookie after an identity swap.
+ * `server.ts` disables the session cookie cache, so no fresh `session_data`
+ * cookie is issued — this only clears a stale one a client still holds from
+ * before that change. Mirrors `emitSessionCookie`'s dual-path delivery:
+ * TanStack's response cookie store plus Better Auth's `responseHeaders` bag.
  */
 async function expireSessionDataCookie(
   ctx: Parameters<Parameters<typeof createAuthMiddleware>[0]>[0],

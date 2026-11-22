@@ -40,7 +40,10 @@ function Login() {
           ? await authClient.signUp.email({ email, password, name: email.split("@")[0] || "user" })
           : await authClient.signIn.email({ email, password });
       if (result.error) {
-        setError(result.error.message || "Could not sign in.");
+        // Sign-in failures stay generic: the server's message can say
+        // whether the email exists, which is an account-existence oracle.
+        // Sign-up keeps its message (validation errors are actionable there).
+        setError(mode === "in" ? "Invalid email or password." : result.error.message || "Could not create an account.");
         return;
       }
       await navigate({ to: "/" });

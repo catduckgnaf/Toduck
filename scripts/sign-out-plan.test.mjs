@@ -109,8 +109,8 @@ test("preview: a stored bearer is still invalidated server-side", async () => {
 });
 
 // ── Deployed ─────────────────────────────────────────────────────────────────
-// JS cannot delete the HttpOnly `__Host-` cookie and `cookieCache` keeps
-// serving the cached session, so an unconfirmed sign-out must NOT look like one.
+// JS cannot delete the HttpOnly `__Host-` cookie, so an unconfirmed sign-out
+// must NOT look like one.
 
 test("deployed: a confirmed sign-out clears the token, then redirects", async () => {
   const h = deployed();

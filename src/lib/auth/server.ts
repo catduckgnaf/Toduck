@@ -14,6 +14,8 @@
  * Tri-mode:
  *   - Deployed: the deployer injects a per-app `GROK_AUTH_*` + `BETTER_AUTH_URL`
  *     + `DATABASE_URL`, so real federated auth is persisted in Postgres.
+ *     Deployed WITHOUT broker creds, federation is off (no silent preview
+ *     client fallback — see below) and email/password is the only sign-in.
  *   - Sandbox live preview: no injection -> falls back to the shared **preview
  *     client** (`./preview`) and derives the preview's `https://*.grok-sandbox.com`
  *     origin from the request, so real sign-in works (no demo users). Sessions
@@ -74,12 +76,29 @@ const env = (key: string): string | undefined => {
 // provisions auth; set it to "false" to force auth off everywhere (dev user).
 const authDisabled = env("VITE_AUTH_ENABLED") === "false";
 
-// Broker federation creds: the deployer injects a per-app client when deployed;
-// otherwise fall back to the shared live-preview client, which the broker accepts
-// for any `*.grok-sandbox.com` callback (see `./preview`).
+const databaseUrl = env("DATABASE_URL");
+
+// Fail fast when a real database is configured without a signing secret: a
+// random per-process secret would invalidate every session on restart (and
+// silently sign everyone out), so the deployer must set BETTER_AUTH_SECRET.
+if (databaseUrl && !env("BETTER_AUTH_SECRET")) {
+  throw new Error(
+    "BETTER_AUTH_SECRET must be set when DATABASE_URL is set — a random per-process secret would invalidate every session on restart.",
+  );
+}
+
+// Broker federation creds: the deployer injects a per-app client when deployed.
+// The shared live-preview client is a sandbox-only fallback: it is used ONLY
+// when no DATABASE_URL is set (preview / local dev). A deployed app without
+// broker creds gets NO federation at all — `authConfigured` is false and the
+// existing fail-closed path applies — instead of silently federating with the
+// committed preview secret.
+const previewFallbackAllowed = !databaseUrl;
 const grokIssuer = env("GROK_AUTH_ISSUER") ?? GROK_ISSUER_DEFAULT;
-const grokClientId = env("GROK_AUTH_CLIENT_ID") ?? PREVIEW_CLIENT_ID;
-const grokClientSecret = env("GROK_AUTH_CLIENT_SECRET") ?? PREVIEW_CLIENT_SECRET;
+const grokClientId =
+  env("GROK_AUTH_CLIENT_ID") ?? (previewFallbackAllowed ? PREVIEW_CLIENT_ID : undefined);
+const grokClientSecret =
+  env("GROK_AUTH_CLIENT_SECRET") ?? (previewFallbackAllowed ? PREVIEW_CLIENT_SECRET : undefined);
 
 /** True when federated sign-in is active (real auth is enforced). */
 export const authConfigured =
@@ -105,8 +124,12 @@ const LOCAL_DEV_ORIGINS: string[] = [
 ];
 const baseURL = explicitBaseURL ?? {
   // Include loopback hosts so dynamic baseURL resolves for local email/password
-  // (not only the preview wildcard).
-  allowedHosts: [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]"],
+  // (not only the preview wildcard). The preview wildcard is only trusted when
+  // no DATABASE_URL is set — a deployed app must set BETTER_AUTH_URL instead of
+  // accepting callbacks from any *.grok-sandbox.com host.
+  allowedHosts: databaseUrl
+    ? ["localhost", "127.0.0.1", "[::1]"]
+    : [...previewAllowedHosts, "localhost", "127.0.0.1", "[::1]"],
   // `auto` → trust both http:// and https:// expansions of allowedHosts
   // (preview is https; local dev is http).
   protocol: "auto" as const,
@@ -114,18 +137,19 @@ const baseURL = explicitBaseURL ?? {
 };
 
 // Origins Better Auth accepts on credentialed POSTs (sign-up/sign-in, etc.).
-// Missing entries here surface as FORBIDDEN "Invalid origin".
+// Missing entries here surface as FORBIDDEN "Invalid origin". The preview
+// wildcard is only trusted when no DATABASE_URL is set (see baseURL above).
 const trustedOrigins: string[] = explicitBaseURL
   ? [explicitBaseURL, ...LOCAL_DEV_ORIGINS]
-  : [
-      // Host wildcards (matched against Origin's host)
-      ...previewAllowedHosts,
-      // Full-origin wildcards (matched against Origin)
-      ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
-      ...LOCAL_DEV_ORIGINS,
-    ];
-
-const databaseUrl = env("DATABASE_URL");
+  : databaseUrl
+    ? [...LOCAL_DEV_ORIGINS]
+    : [
+        // Host wildcards (matched against Origin's host)
+        ...previewAllowedHosts,
+        // Full-origin wildcards (matched against Origin)
+        ...previewAllowedHosts.flatMap((host) => [`https://${host}`, `http://${host}`]),
+        ...LOCAL_DEV_ORIGINS,
+      ];
 
 // Static broker OAuth endpoints (skip OIDC discovery on every sign-in / callback).
 // Discovery would cost an extra network hop to the broker before the popup can
@@ -139,14 +163,35 @@ const grokUserInfoUrl = `${issuerBase}/api/auth/oauth2/userinfo`;
 // Real Postgres when `DATABASE_URL` is set (deployed apps), else the app's
 // embedded PGLite (preview) via a Kysely dialect — so Better Auth persists to the
 // SAME DB as app data, including email/password users. Both use the Better Auth
-// schema from `migrations/auth/0001_auth.sql`, copied into `migrations/` when
-// the app turns sign-in on.
+// schema from `migrations/auth/0001_auth.sql`, applied recursively from
+// `migrations/**` by both appliers.
 const database = databaseUrl
   ? new Pool({ connectionString: databaseUrl })
   : { dialect: pgliteDialect(() => getPglite()), type: "postgres" as const };
 
+/**
+ * Plain-http LAN deploys (an explicit `http://` BETTER_AUTH_URL on a
+ * non-loopback host) cannot use Secure / `__Host-` cookies: browsers refuse to
+ * set them over plain http, so sign-in would silently never stick. Derive the
+ * cookie mode from the configured URL instead of assuming https everywhere.
+ * Loopback http keeps `__Host-` — browsers allow Secure cookies on
+ * `http://localhost` — and so does every https URL.
+ */
+const plainHttpLan = (() => {
+  if (!explicitBaseURL) return false;
+  try {
+    const parsed = new URL(explicitBaseURL);
+    if (parsed.protocol !== "http:") return false;
+    const host = parsed.hostname;
+    return host !== "localhost" && host !== "127.0.0.1" && host !== "[::1]";
+  } catch {
+    return false;
+  }
+})();
+const cookiePrefix = plainHttpLan ? "grok-auth" : "__Host-grok-auth";
+
 /** Session token cookie name — also read by the live-preview popup completion page. */
-export const SESSION_TOKEN_COOKIE = "__Host-grok-auth.session_token";
+export const SESSION_TOKEN_COOKIE = `${cookiePrefix}.session_token`;
 
 // Built separately so the `betterAuth({...})` call stays easy to edit without
 // breaking brackets (models often trip on the conditional plugin spread).
@@ -204,11 +249,15 @@ export const auth = betterAuth({
     },
   },
 
-  // Cache the session in the short-lived signed `session_data` cookie so reads
-  // (incl. the client's `/get-session`) skip the DB — this shrinks the "loading"
-  // window and reduces auth flicker. See the `auth` skill for the full
-  // flicker-prevention guidance (gate on `isPending`; SSR the session).
-  session: { cookieCache: { enabled: true, maxAge: 300 } },
+  // Rate limiting is explicit, not left to Better Auth's production-only
+  // default: 100 requests / 10s per IP, with the stricter 3 sign-in/sign-up
+  // attempts / 10s the library applies to those endpoints.
+  rateLimit: { enabled: true, window: 10, max: 100 },
+
+  // No session cookie cache: a cached `session_data` cookie survives sign-out
+  // for up to its maxAge, so a signed-out client keeps reading a live session.
+  // Reads hit the DB instead — sign-out takes effect immediately.
+  session: { cookieCache: { enabled: false } },
 
   // Local email/password — toggled only via `./email-password` (not a plugin).
   ...(emailAndPasswordEnabled ? { emailAndPassword: { enabled: true } } : {}),
@@ -219,15 +268,17 @@ export const auth = betterAuth({
   // Path=/ + no Domain; Better Auth otherwise uses `__Secure-` (which permits
   // Domain), so we drop its auto prefix (`useSecureCookies: false`) and set
   // Secure + the names ourselves. (Browsers allow Secure cookies on
-  // `http://localhost`, so local dev still works.)
+  // `http://localhost`, so local dev still works.) On a plain-http LAN deploy
+  // the prefix and Secure are dropped instead (see `plainHttpLan` above) —
+  // `__Host-`/Secure cookies would never be set over http at all.
   advanced: {
     useSecureCookies: false,
-    defaultCookieAttributes: { secure: true, sameSite: "lax", path: "/" },
+    defaultCookieAttributes: { secure: !plainHttpLan, sameSite: "lax", path: "/" },
     cookies: {
       session_token: { name: SESSION_TOKEN_COOKIE },
-      session_data: { name: "__Host-grok-auth.session_data" },
-      account_data: { name: "__Host-grok-auth.account_data" },
-      dont_remember: { name: "__Host-grok-auth.dont_remember" },
+      session_data: { name: `${cookiePrefix}.session_data` },
+      account_data: { name: `${cookiePrefix}.account_data` },
+      dont_remember: { name: `${cookiePrefix}.dont_remember` },
     },
   },
 

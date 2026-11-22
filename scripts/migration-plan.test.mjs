@@ -1,30 +1,17 @@
 import assert from "node:assert/strict";
 import {
-  existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { isMigrationFile, migrationName, pendingMigrations } from "./migration-plan.mjs";
+import { isMigrationFile, listMigrationFiles, migrationName, pendingMigrations } from "./migration-plan.mjs";
 import { projectRoot } from "./with-app-env.mjs";
 
 const AUTH_MIGRATION = "0001_auth.sql";
-
-/**
- * The auth-on copy of the Better Auth schema and its source, or null when the
- * app has not turned sign-in on (the shipped state).
- */
-function authSchemaCopy(root) {
-  const copy = join(root, "migrations", AUTH_MIGRATION);
-  const source = join(root, "migrations/auth", AUTH_MIGRATION);
-  if (!existsSync(copy) || !existsSync(source)) return null;
-  return { copy: readFileSync(copy, "utf8"), source: readFileSync(source, "utf8") };
-}
 
 test("_migrations keys on basename, not path", () => {
   assert.equal(migrationName("/migrations/0002_todos.sql"), "0002_todos.sql");
@@ -56,35 +43,35 @@ test("non-.sql entries are dropped (readdir also yields the auth/ directory)", (
   assert.deepEqual(pendingMigrations(["auth", "README.md"], []), []);
 });
 
-test("the auth schema ships outside the globbed directory", () => {
+test("the auth schema under migrations/auth/ is in scope for both appliers", () => {
   const migrationsDir = join(projectRoot(), "migrations");
+  assert.ok(readdirSync(join(migrationsDir, "auth")).includes(AUTH_MIGRATION));
+  // The recursive appliers see it; the top level still has no .sql of its own.
   assert.deepEqual(pendingMigrations(readdirSync(migrationsDir), []), []);
-  assert.ok(readdirSync(join(migrationsDir, "auth")).includes("0001_auth.sql"));
+  assert.deepEqual(pendingMigrations([`auth/${AUTH_MIGRATION}`], []), [
+    { name: AUTH_MIGRATION, path: `auth/${AUTH_MIGRATION}` },
+  ]);
 });
 
-test("this workspace's auth schema copy is byte-identical to its source", () => {
-  // An edited copy diverges silently: basename keying skips it on a database
-  // that already ran the original, and applies it on a fresh PGLite preview.
-  const pair = authSchemaCopy(projectRoot());
-  if (pair === null) return; // sign-in off — nothing has been copied up
-  assert.equal(
-    pair.copy,
-    pair.source,
-    "migrations/0001_auth.sql has been edited — it must stay a verbatim copy of migrations/auth/0001_auth.sql",
-  );
-});
-
-test("the copy check reads both files and catches an edit", () => {
-  const root = mkdtempSync(join(tmpdir(), "auth-schema-"));
+test("listMigrationFiles descends into subdirectories", async () => {
+  const root = mkdtempSync(join(tmpdir(), "migrations-"));
   mkdirSync(join(root, "migrations/auth"), { recursive: true });
-  writeFileSync(join(root, "migrations/auth", AUTH_MIGRATION), "create table t ();\n");
-  assert.equal(authSchemaCopy(root), null);
+  writeFileSync(join(root, "migrations/0002_top.sql"), "select 2;\n");
+  writeFileSync(join(root, "migrations/auth", AUTH_MIGRATION), "select 1;\n");
+  writeFileSync(join(root, "migrations/README.md"), "not a migration\n");
+  const files = await listMigrationFiles(join(root, "migrations"));
+  assert.deepEqual([...files].sort(), ["0002_top.sql", `auth/${AUTH_MIGRATION}`]);
+});
 
-  writeFileSync(join(root, "migrations", AUTH_MIGRATION), "create table t ();\n");
-  const same = authSchemaCopy(root);
-  assert.equal(same.copy, same.source);
-
-  writeFileSync(join(root, "migrations", AUTH_MIGRATION), "create table t (x int);\n");
-  const drifted = authSchemaCopy(root);
-  assert.notEqual(drifted.copy, drifted.source);
+test("the same basename in two directories applies once, top-level first", () => {
+  // A database that already applied a copied-up auth schema must not re-run
+  // the source file in the same pass (the second _migrations insert would fail).
+  assert.deepEqual(
+    pendingMigrations([`auth/${AUTH_MIGRATION}`, AUTH_MIGRATION], []),
+    [{ name: AUTH_MIGRATION, path: AUTH_MIGRATION }],
+  );
+  assert.deepEqual(
+    pendingMigrations([AUTH_MIGRATION, `auth/${AUTH_MIGRATION}`], []),
+    [{ name: AUTH_MIGRATION, path: AUTH_MIGRATION }],
+  );
 });
