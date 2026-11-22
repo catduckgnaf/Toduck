@@ -946,6 +946,112 @@ func TestUserPutCannotReplaceCategoriesOrProjects(t *testing.T) {
 }
 
 func TestDeleteUserBumpsRevisionAndReassignsTasks(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	bob := createUserGo(t, server.URL, "Bob")
+	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Alice task", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice put %d", res.StatusCode)
+	}
+	_, revision := getStateFull(t, server.URL, testToken)
+	del := doRequest(t, http.MethodDelete, server.URL+"/v1/users/"+alice.ID, testToken, "", nil)
+	defer del.Body.Close()
+	if del.StatusCode != 200 {
+		t.Fatalf("delete alice %d", del.StatusCode)
+	}
+	var deleted map[string]any
+	json.NewDecoder(del.Body).Decode(&deleted)
+	if deleted["revision"] != float64(revision+1) {
+		t.Fatalf("delete revision %+v want %d", deleted, revision+1)
+	}
+	// Alice's task survives, now unowned (the admin's), still shared with Bob.
+	state, newRevision := getStateFull(t, server.URL, testToken)
+	if newRevision != revision+1 {
+		t.Fatalf("revision %d want %d", newRevision, revision+1)
+	}
+	var tasks []map[string]any
+	json.Unmarshal(state["tasks"], &tasks)
+	if len(tasks) != 1 || tasks[0]["ownerId"] != nil {
+		t.Fatalf("alice task after delete %+v", tasks)
+	}
+	if got := tasks[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
+		t.Fatalf("sharedWith after delete %v", tasks[0]["sharedWith"])
+	}
+	// A stale client PUT with the pre-delete revision gets 409, so it
+	// cannot write Alice's id back into sharedWith.
+	stale := putStateGo(t, server.URL, testToken, revision, `{"tasks":[],"categories":[],"projects":[]}`)
+	defer stale.Body.Close()
+	if stale.StatusCode != 409 {
+		t.Fatalf("stale put status %d", stale.StatusCode)
+	}
+	// Even an admin PUT naming the removed id has it sanitized away.
+	shared := taskJSON("a1", "Alice task", "", []string{alice.ID, bob.ID})
+	res = putStateGo(t, server.URL, testToken, newRevision, `{"tasks":[`+shared+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("admin rewrite %d", res.StatusCode)
+	}
+	state, _ = getStateFull(t, server.URL, testToken)
+	var rewritten []map[string]any
+	json.Unmarshal(state["tasks"], &rewritten)
+	if got := rewritten[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
+		t.Fatalf("removed id written back: %v", rewritten[0]["sharedWith"])
+	}
+}
+
+func TestSharedUserCannotUndeleteTombstonedTask(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	bob := createUserGo(t, server.URL, "Bob")
+	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Shared", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice put %d", res.StatusCode)
+	}
+	// Alice tombstones her task.
+	_, revision := getStateFull(t, server.URL, testToken)
+	tombstone := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
+	var parsed map[string]any
+	json.Unmarshal([]byte(tombstone), &parsed)
+	parsed["deleted"] = true
+	tombRaw, _ := json.Marshal(parsed)
+	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+string(tombRaw)+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice tombstone %d", res.StatusCode)
+	}
+	// Bob syncs a stale live copy: the tombstone must stand.
+	_, revision = getStateFull(t, server.URL, testToken)
+	live := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
+	res = putStateGo(t, server.URL, bob.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("bob resurrect put %d", res.StatusCode)
+	}
+	state, _ := getStateFull(t, server.URL, testToken)
+	var tasks []map[string]any
+	json.Unmarshal(state["tasks"], &tasks)
+	if len(tasks) != 1 || tasks[0]["deleted"] != true {
+		t.Fatalf("tombstone resurrected %+v", tasks)
+	}
+	// The owner themself may still undelete it.
+	_, revision = getStateFull(t, server.URL, testToken)
+	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("alice undelete %d", res.StatusCode)
+	}
+	state, _ = getStateFull(t, server.URL, testToken)
+	var undeleted []map[string]any
+	json.Unmarshal(state["tasks"], &undeleted)
+	if deleted, _ := undeleted[0]["deleted"].(bool); deleted {
+		t.Fatalf("owner could not undelete %+v", undeleted)
+	}
+}
+
 // Issue #102: the Web UI has no client-side gate that protects data, so the
 // server must refuse every data route without a valid bearer token. These
 // tests enumerate the whole /v1 surface.
@@ -1082,105 +1188,6 @@ func TestPersonalTokenCannotReachAdminOnlyOrOtherUsersData(t *testing.T) {
 	defer server.Close()
 	alice := createUserGo(t, server.URL, "Alice")
 	bob := createUserGo(t, server.URL, "Bob")
-	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Alice task", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("alice put %d", res.StatusCode)
-	}
-	_, revision := getStateFull(t, server.URL, testToken)
-	del := doRequest(t, http.MethodDelete, server.URL+"/v1/users/"+alice.ID, testToken, "", nil)
-	defer del.Body.Close()
-	if del.StatusCode != 200 {
-		t.Fatalf("delete alice %d", del.StatusCode)
-	}
-	var deleted map[string]any
-	json.NewDecoder(del.Body).Decode(&deleted)
-	if deleted["revision"] != float64(revision+1) {
-		t.Fatalf("delete revision %+v want %d", deleted, revision+1)
-	}
-	// Alice's task survives, now unowned (the admin's), still shared with Bob.
-	state, newRevision := getStateFull(t, server.URL, testToken)
-	if newRevision != revision+1 {
-		t.Fatalf("revision %d want %d", newRevision, revision+1)
-	}
-	var tasks []map[string]any
-	json.Unmarshal(state["tasks"], &tasks)
-	if len(tasks) != 1 || tasks[0]["ownerId"] != nil {
-		t.Fatalf("alice task after delete %+v", tasks)
-	}
-	if got := tasks[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
-		t.Fatalf("sharedWith after delete %v", tasks[0]["sharedWith"])
-	}
-	// A stale client PUT with the pre-delete revision gets 409, so it
-	// cannot write Alice's id back into sharedWith.
-	stale := putStateGo(t, server.URL, testToken, revision, `{"tasks":[],"categories":[],"projects":[]}`)
-	defer stale.Body.Close()
-	if stale.StatusCode != 409 {
-		t.Fatalf("stale put status %d", stale.StatusCode)
-	}
-	// Even an admin PUT naming the removed id has it sanitized away.
-	shared := taskJSON("a1", "Alice task", "", []string{alice.ID, bob.ID})
-	res = putStateGo(t, server.URL, testToken, newRevision, `{"tasks":[`+shared+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("admin rewrite %d", res.StatusCode)
-	}
-	state, _ = getStateFull(t, server.URL, testToken)
-	var rewritten []map[string]any
-	json.Unmarshal(state["tasks"], &rewritten)
-	if got := rewritten[0]["sharedWith"].([]any); len(got) != 1 || got[0] != bob.ID {
-		t.Fatalf("removed id written back: %v", rewritten[0]["sharedWith"])
-	}
-}
-
-func TestSharedUserCannotUndeleteTombstonedTask(t *testing.T) {
-	server, _ := newTestServer(t)
-	defer server.Close()
-	alice := createUserGo(t, server.URL, "Alice")
-	bob := createUserGo(t, server.URL, "Bob")
-	res := putStateGo(t, server.URL, alice.Token, 0, `{"tasks":[`+taskJSON("a1", "Shared", alice.ID, []string{bob.ID})+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("alice put %d", res.StatusCode)
-	}
-	// Alice tombstones her task.
-	_, revision := getStateFull(t, server.URL, testToken)
-	tombstone := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
-	var parsed map[string]any
-	json.Unmarshal([]byte(tombstone), &parsed)
-	parsed["deleted"] = true
-	tombRaw, _ := json.Marshal(parsed)
-	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+string(tombRaw)+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("alice tombstone %d", res.StatusCode)
-	}
-	// Bob syncs a stale live copy: the tombstone must stand.
-	_, revision = getStateFull(t, server.URL, testToken)
-	live := taskJSON("a1", "Shared", alice.ID, []string{bob.ID})
-	res = putStateGo(t, server.URL, bob.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("bob resurrect put %d", res.StatusCode)
-	}
-	state, _ := getStateFull(t, server.URL, testToken)
-	var tasks []map[string]any
-	json.Unmarshal(state["tasks"], &tasks)
-	if len(tasks) != 1 || tasks[0]["deleted"] != true {
-		t.Fatalf("tombstone resurrected %+v", tasks)
-	}
-	// The owner themself may still undelete it.
-	_, revision = getStateFull(t, server.URL, testToken)
-	res = putStateGo(t, server.URL, alice.Token, revision, `{"tasks":[`+live+`],"categories":[],"projects":[]}`)
-	res.Body.Close()
-	if res.StatusCode != 200 {
-		t.Fatalf("alice undelete %d", res.StatusCode)
-	}
-	state, _ = getStateFull(t, server.URL, testToken)
-	var undeleted []map[string]any
-	json.Unmarshal(state["tasks"], &undeleted)
-	if deleted, _ := undeleted[0]["deleted"].(bool); deleted {
-		t.Fatalf("owner could not undelete %+v", undeleted)
 	seed := doRest(t, http.MethodPost, server.URL+"/v1/tasks", alice.Token, `{"title":"Alice secret"}`)
 	seed.Body.Close()
 	legacy := doRest(t, http.MethodPost, server.URL+"/v1/tasks", testToken, `{"title":"Admin legacy"}`)
