@@ -70,10 +70,15 @@ test("installed app launches and restarts offline, keeps its tasks, and ignores 
     const cached = await page.evaluate(async () => {
       const names = await caches.keys();
       const urls: string[] = [];
-      for (const name of names) for (const request of await (await caches.open(name)).keys()) urls.push(new URL(request.url).pathname);
-      return { names, urls };
+      const builds = names.filter((name) => name.startsWith("toduck-"));
+      for (const name of builds) for (const request of await (await caches.open(name)).keys()) urls.push(new URL(request.url).pathname);
+      return { names: builds, urls };
     });
     expect(cached.names).toHaveLength(1);
+    // The open tab is recorded as running this build, so later updates keep its cache.
+    await expect
+      .poll(() => page.evaluate(async () => (await (await caches.open("toduck:clients")).keys()).length))
+      .toBeGreaterThan(0);
     expect(cached.urls).toContain("/");
     expect(cached.urls.filter((url) => url.startsWith("/assets/") && url.endsWith(".js")).length).toBeGreaterThan(1);
     expect(cached.urls.filter((url) => url.endsWith(".css")).length).toBeGreaterThan(0);

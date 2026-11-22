@@ -47,4 +47,8 @@ test("activation keeps the current and previous Toduck caches and deletes the re
   const current = runInNewContext("CACHE", sandbox);
   assert.deepEqual(runInNewContext("cachesToDelete", sandbox)(["toduck-old", "other", "toduck-prev", current]), ["toduck-old", "other"]);
   assert.deepEqual(runInNewContext("cachesToDelete", sandbox)([current]), []);
+  // A tab still running build A keeps A's cache after B and then C activate.
+  const keys = ["toduck-a", "toduck-b", "toduck:clients", current];
+  assert.deepEqual(runInNewContext("cachesToDelete", sandbox)(keys, new Set(["toduck-a"])), []);
+  assert.deepEqual(runInNewContext("cachesToDelete", sandbox)(keys, new Set()), ["toduck-a"]);
 });

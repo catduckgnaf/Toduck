@@ -6,17 +6,23 @@
 // build, and PRECACHE_ASSETS lists every file under /assets/. In `npm run dev`
 // the stamps keep their defaults and only runtime caching applies.
 //
-// Activation keeps the current cache plus the one build before it and deletes
-// the rest. The new worker takes over open tabs at once (skipWaiting), and a tab
-// still running the previous build may later lazy-load one of that build's
-// chunks; keeping the previous cache lets those requests succeed offline or
-// after the deployment removed the old files. Only build assets fall back to
-// older caches; the app shell always comes from the current one. The worker
-// never touches localStorage, so saved tasks are unaffected by updates.
+// Activation keeps the current cache, the cache of every build an open tab is
+// still running, and the one build before the current one; it deletes the rest.
+// The new worker takes over open tabs at once (skipWaiting), and a tab still
+// running an older build may later lazy-load one of that build's chunks, even
+// after several later deployments. The worker records which build cache each
+// tab loads its assets from (in the CLIENTS_CACHE bookkeeping cache), so those
+// requests keep succeeding offline or after the server removed the old files.
+// Only build assets fall back to older caches; the app shell always comes from
+// the current one. The worker never touches localStorage, so saved tasks are
+// unaffected by updates.
 const BUILD_ID = "dev"; // @stamp build
 const PRECACHE_ASSETS = []; // @stamp assets
 
 const CACHE = "toduck-" + BUILD_ID;
+// Maps an open tab (client id) to the build cache it runs. Not a build cache.
+const CLIENTS_CACHE = "toduck:clients";
+const CLIENT_KEY = "/__toduck/client/";
 // The page and the build assets must cache or installation fails (and the
 // previous worker with its complete cache keeps serving). Icons are best effort.
 const REQUIRED = ["/"];
@@ -44,21 +50,66 @@ self.addEventListener("install", (event) => {
 });
 
 // caches.keys() lists caches in creation order, so the last older Toduck cache
-// belongs to the build this worker replaces.
-function cachesToDelete(keys) {
-  const older = keys.filter((k) => k !== CACHE);
+// belongs to the build this worker replaces. `inUse` holds the caches that open
+// tabs are still running.
+function cachesToDelete(keys, inUse = new Set()) {
+  const older = keys.filter((k) => k !== CACHE && k !== CLIENTS_CACHE);
   const ours = older.filter((k) => k.startsWith("toduck-"));
   const previous = ours[ours.length - 1];
-  return older.filter((k) => k !== previous);
+  return older.filter((k) => k !== previous && !inUse.has(k));
+}
+
+// Records which build cache a tab runs. A navigation fixes it: the page opens
+// on the build this worker serves. A tab that loaded before any worker
+// controlled it is recorded by its first asset request instead (`ifAbsent`), so
+// an asset two builds share never moves a tab to the wrong build. Records live in
+// Cache Storage, so they outlive this worker.
+const recorded = new Map();
+async function recordClient(clientId, cacheName, ifAbsent = false) {
+  if (!clientId || recorded.get(clientId) === cacheName) return;
+  try {
+    const meta = await caches.open(CLIENTS_CACHE);
+    const key = CLIENT_KEY + encodeURIComponent(clientId);
+    if (ifAbsent && (await meta.match(key))) return;
+    recorded.set(clientId, cacheName);
+    await meta.put(key, new Response(cacheName));
+  } catch {
+    // Bookkeeping is best effort; cleanup keeps every cache when it is missing.
+  }
+}
+
+// Returns the caches open tabs still run, and forgets tabs that have closed.
+async function cachesInUse(live) {
+  const meta = await caches.open(CLIENTS_CACHE);
+  const inUse = new Set();
+  for (const key of await meta.keys()) {
+    const id = decodeURIComponent(new URL(key.url).pathname.slice(CLIENT_KEY.length));
+    if (live.has(id)) {
+      const res = await meta.match(key);
+      if (res) inUse.add(await res.text());
+    } else {
+      await meta.delete(key);
+    }
+  }
+  return inUse;
+}
+
+async function cleanUp() {
+  const live = new Set((await self.clients.matchAll({ type: "window", includeUncontrolled: true })).map((c) => c.id));
+  const inUse = await cachesInUse(live).catch(() => null);
+  // Without the bookkeeping, keep every Toduck cache rather than guess.
+  if (!inUse) return;
+  const keys = await caches.keys();
+  // On the first install, the tabs already open loaded this build before any
+  // worker ran, so nothing recorded them yet.
+  if (!keys.some((k) => k !== CACHE && k.startsWith("toduck-"))) {
+    await Promise.all([...live].map((id) => recordClient(id, CACHE, true)));
+  }
+  await Promise.all(cachesToDelete(keys, inUse).map((k) => caches.delete(k)));
 }
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches
-      .keys()
-      .then((keys) => Promise.all(cachesToDelete(keys).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim()),
-  );
+  event.waitUntil(cleanUp().then(() => self.clients.claim()));
 });
 
 function isHtml(res) {
@@ -94,15 +145,31 @@ async function navigate(req, url) {
   return res || (await network) || Response.error();
 }
 
-async function hashedAsset(req) {
-  const cache = await caches.open(CACHE);
-  const hit = await cache.match(req);
-  if (hit) return hit;
-  // A tab still on the previous build asks for that build's chunks.
-  const older = await caches.match(req);
-  if (older) return older;
+async function cacheHolding(req) {
+  const current = await caches.open(CACHE);
+  const hit = await current.match(req);
+  if (hit) return { name: CACHE, hit };
+  for (const name of (await caches.keys()).reverse()) {
+    if (name === CACHE || !name.startsWith("toduck-")) continue;
+    const older = await (await caches.open(name)).match(req);
+    if (older) return { name, hit: older };
+  }
+  return null;
+}
+
+async function hashedAsset(req, clientId) {
+  // A tab still on an older build asks for that build's chunks.
+  const found = await cacheHolding(req);
+  if (found) {
+    recordClient(clientId, found.name, true);
+    return found.hit;
+  }
   const res = await fetch(req);
-  if (res.ok && !isHtml(res)) remember(cache, req, res.clone());
+  if (res.ok && !isHtml(res)) {
+    const cache = await caches.open(CACHE);
+    remember(cache, req, res.clone());
+    recordClient(clientId, CACHE, true);
+  }
   return res;
 }
 
@@ -131,13 +198,15 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/v1/") || url.pathname.startsWith("/api/")) return;
 
   if (req.mode === "navigate") {
+    // The page this opens runs the build this worker serves.
+    recordClient(event.resultingClientId, CACHE);
     event.respondWith(navigate(req, url));
     return;
   }
 
   // Content-hashed build output never changes under the same name.
   if (url.pathname.startsWith("/assets/")) {
-    event.respondWith(hashedAsset(req));
+    event.respondWith(hashedAsset(req, event.clientId));
     return;
   }
 
