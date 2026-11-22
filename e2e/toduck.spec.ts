@@ -453,6 +453,35 @@ test("ignoring text parsing saves the raw title with default fields", async ({ p
   await expect(row.getByLabel(/Change date for Pay bill tomorrow/)).toHaveValue(today);
 });
 
+test("typing after ignoring text parsing keeps the parsed words' meaning", async ({ page }) => {
+  const key = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = key(tomorrowDate);
+
+  const input = page.getByLabel("New toduck");
+  await input.fill("Pay bill tomorrow");
+  const preview = page.getByRole("region", { name: "Task preview" });
+  await expect(preview).toContainText("Tomorrow");
+  await page.getByRole("button", { name: "Ignore text parsing" }).click();
+  await expect(preview).toHaveCount(0);
+
+  // Parsing resumes on the next keystroke. The parsed word is stripped from
+  // the saved title, so its date must be applied again, not lost.
+  await input.press("End");
+  await input.pressSequentially(" rent");
+  await expect(preview).toContainText("Tomorrow");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Pay bill rent" });
+  await expect(row).toBeVisible();
+  await expect(row.getByLabel(/Change date for Pay bill rent/)).toHaveValue(tomorrow);
+});
+
 test("self-host server serves a page whose inline scripts run", async ({ page }, testInfo) => {
   // Regression: the self-host server's Content-Security-Policy must not block
   // the inline bootstrap scripts in the Web UI it serves, or the deployed app

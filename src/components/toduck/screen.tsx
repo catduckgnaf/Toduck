@@ -1009,6 +1009,11 @@ function Composer({
     setRepeatOverride(null);
     setNlTime(null);
     setNlPriority(null);
+    // Forget what was last synced so the next keystroke re-applies every
+    // parsed field. The saved title strips the parsed words once parsing
+    // resumes, so without this their date, time, project and priority
+    // would be dropped along with the text.
+    lastSyncedRef.current = null;
   };
 
   const effectiveRepeat: Repeat = repeatOverride ?? { kind: repeatKind };
