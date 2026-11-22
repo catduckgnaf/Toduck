@@ -27,7 +27,7 @@ repository) — first-time GHCR packages are not always public by default.
 * `TODUCK_TOKEN` is required and must contain at least 32 characters. Startup fails without it.
 * API clients send `Authorization: Bearer <token>`.
 * The browser stores the server address, but keeps the token only in the current in memory session. Disconnecting clears it without deleting local tasks.
-* Cross origin API calls are rejected unless their origin appears in `TODUCK_ALLOWED_ORIGINS`.
+* Cross origin API calls are rejected unless their origin appears in `TODUCK_ALLOWED_ORIGINS`. The bundled Web UI is served by the same server, so its calls are same-origin and need no entry.
 * The container runs as the unprivileged `toduck` user and exposes a public `/health` endpoint.
 * State updates require the current ETag in `If-Match`. Stale writers receive `409 Conflict` and clients pull, merge, and retry.
 
@@ -53,6 +53,8 @@ export TODUCK_ALLOWED_ORIGINS="https://tasks.example.com,https://mobile.example.
 ```
 
 A `.env` file beside the Compose command may hold these values. Do not commit it.
+
+Only origins other than the server itself need listing: the bundled Web UI is same-origin, and Android and Home Assistant send no `Origin` header.
 
 ## API
 

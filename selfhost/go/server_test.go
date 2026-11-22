@@ -118,6 +118,43 @@ func TestBodyLimitAndCORSAndHeaders(t *testing.T) {
 		t.Fatalf("evil origin status %d", evilRes.StatusCode)
 	}
 
+	// Same-origin browser requests are allowed without an allowlist entry
+	// (#36): the bundled Web UI writes to its own server.
+	same, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/state", nil)
+	auth(same)
+	same.Header.Set("Origin", server.URL)
+	sameRes, _ := http.DefaultClient.Do(same)
+	if sameRes.StatusCode != 200 {
+		t.Fatalf("same-origin status %d", sameRes.StatusCode)
+	}
+	// Same-origin writes work too, and the token is still required.
+	revision := sameRes.Header.Get("ETag")
+	putBody := strings.NewReader(`{"tasks":[],"categories":[]}`)
+	put, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/state", putBody)
+	auth(put)
+	put.Header.Set("Origin", server.URL)
+	put.Header.Set("Content-Type", "application/json")
+	put.Header.Set("If-Match", revision)
+	putRes, _ := http.DefaultClient.Do(put)
+	if putRes.StatusCode != 200 {
+		t.Fatalf("same-origin PUT status %d", putRes.StatusCode)
+	}
+	unauthenticated, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/state", nil)
+	unauthenticated.Header.Set("Origin", server.URL)
+	unauthenticatedRes, _ := http.DefaultClient.Do(unauthenticated)
+	if unauthenticatedRes.StatusCode != 401 {
+		t.Fatalf("same-origin without token status %d", unauthenticatedRes.StatusCode)
+	}
+	// Scheme is not part of the comparison: a proxy may terminate TLS in
+	// front of a plain-http server.
+	tlsTerminated, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/state", nil)
+	auth(tlsTerminated)
+	tlsTerminated.Header.Set("Origin", strings.Replace(server.URL, "http://", "https://", 1))
+	tlsTerminatedRes, _ := http.DefaultClient.Do(tlsTerminated)
+	if tlsTerminatedRes.StatusCode != 200 {
+		t.Fatalf("TLS-terminated same-origin status %d", tlsTerminatedRes.StatusCode)
+	}
+
 	allowed := httptest.NewServer(newServer(config{token: testToken, dataPath: filepath.Join(dir, "allowed.json"), staticDir: dir, allowedOrigins: []string{"https://tasks.example"}}))
 	defer allowed.Close()
 	good, _ := http.NewRequest(http.MethodGet, allowed.URL+"/v1/state", nil)
@@ -131,7 +168,7 @@ func TestBodyLimitAndCORSAndHeaders(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("home"), 0o644)
 	os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("secret"), 0o644)
 	page, _ := http.Get(server.URL + "/")
-	if page.StatusCode != 200 || readBody(page) != "home" || page.Header.Get("X-Content-Type-Options") != "nosniff" || page.Header.Get("Referrer-Policy") != "no-referrer" || !strings.Contains(page.Header.Get("Content-Security-Policy"), "default-src 'self'") || !strings.Contains(page.Header.Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
+	if page.StatusCode != 200 || readBody(page) != "home" || page.Header.Get("X-Content-Type-Options") != "nosniff" || page.Header.Get("Referrer-Policy") != "no-referrer" || !strings.Contains(page.Header.Get("Content-Security-Policy"), "default-src 'self'") || !strings.Contains(page.Header.Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") || page.Header.Get("X-Toduck-Server") != "1" {
 		t.Fatalf("security headers missing: %d %v", page.StatusCode, page.Header)
 	}
 	fallback, _ := http.Get(server.URL + "/missing")

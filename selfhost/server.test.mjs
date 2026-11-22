@@ -97,6 +97,40 @@ test("CORS is absent by default and explicit origins are allowlisted", async () 
   );
 });
 
+test("same-origin browser writes are allowed without an allowlist entry (#36)", async () => {
+  await withServer(async ({ url }) => {
+    const origin = new URL(url).origin;
+    // A browser on the server's own origin sends Origin on writes; the
+    // bundled Web UI must be able to push without TODUCK_ALLOWED_ORIGINS.
+    const read = await fetch(`${url}/v1/state`, { headers: auth({ Origin: origin }) });
+    assert.equal(read.status, 200);
+    const put = await fetch(`${url}/v1/state`, {
+      method: "PUT",
+      headers: auth({ Origin: origin, "Content-Type": "application/json", "If-Match": '"0"' }),
+      body: JSON.stringify({ tasks: [], categories: [] }),
+    });
+    assert.equal(put.status, 200);
+    // Same-origin allowance is not a free pass: the token is still required.
+    const unauthenticated = await fetch(`${url}/v1/state`, { headers: { Origin: origin } });
+    assert.equal(unauthenticated.status, 401);
+    // And a different host is still rejected.
+    const crossOrigin = await fetch(`${url}/v1/state`, { headers: auth({ Origin: "https://other.example" }) });
+    assert.equal(crossOrigin.status, 403);
+    // Scheme is not part of the comparison: a proxy may terminate TLS in
+    // front of a plain-http server, so an https origin for the same
+    // host and port is still the same origin.
+    const tlsTerminated = await fetch(`${url}/v1/state`, {
+      headers: auth({ Origin: url.replace("http://", "https://") }),
+    });
+    assert.equal(tlsTerminated.status, 200);
+    // A forged X-Forwarded-Host does not vouch for a foreign origin.
+    const spoofed = await fetch(`${url}/v1/state`, {
+      headers: auth({ Origin: "https://evil.example", "X-Forwarded-Host": "evil.example" }),
+    });
+    assert.equal(spoofed.status, 403);
+  });
+});
+
 test("security headers are returned for web responses", async () => {
   await withServer(async ({ url, dir }) => {
     await writeFile(join(dir, "index.html"), "<!doctype html><title>Toduck</title>");
@@ -106,6 +140,11 @@ test("security headers are returned for web responses", async () => {
     assert.equal(response.headers.get("referrer-policy"), "no-referrer");
     assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'self'/);
     assert.match(response.headers.get("content-security-policy") ?? "", /script-src 'self' 'unsafe-inline'/);
+    // The SPA shell is marked so the Web UI can recognise its own server (#106).
+    assert.equal(response.headers.get("x-toduck-server"), "1");
+    const head = await fetch(`${url}/`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.equal(head.headers.get("x-toduck-server"), "1");
   });
 });
 

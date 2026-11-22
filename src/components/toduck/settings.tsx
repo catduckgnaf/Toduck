@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Button, Modal, SectionLabel } from "@/components/toduck/ui";
 import { activeCategories, activeProjects } from "@/lib/toduck/model";
@@ -12,6 +12,7 @@ import {
   checkServer,
   createUser,
   deleteUser,
+  detectSameOriginServer,
   fetchMe,
   listUsers,
   normalizeServerUrl,
@@ -297,6 +298,30 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
+  const [sameOrigin, setSameOrigin] = useState<string | null>(null);
+  const tokenInput = useRef<HTMLInputElement | null>(null);
+
+  // When nothing is connected yet, check whether the page itself was
+  // served by a Toduck server, so the address can be filled in instead
+  // of typed (#106). The probe never sends a token; connecting still
+  // needs one, and a remote server is still entered by hand below.
+  useEffect(() => {
+    if (serverUrl) return;
+    let cancelled = false;
+    void detectSameOriginServer().then((found) => {
+      if (!cancelled) setSameOrigin(found);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [serverUrl]);
+
+  function useSameOrigin() {
+    if (!sameOrigin) return;
+    setUrl(sameOrigin);
+    setMessage("This server's address is filled in. Enter its token to connect.");
+    tokenInput.current?.focus();
+  }
 
   useEffect(() => {
     const onPrompt = (e: Event) => {
@@ -338,7 +363,14 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       await syncNow();
       setMessage("Connected. Notes, categories, projects, and toducks will stay in sync.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not reach the server.");
+      const raw = error instanceof Error ? error.message : "Could not reach the server.";
+      setMessage(
+        raw.includes("Unauthorized")
+          ? "That token was not accepted by the server. Check the token and try again."
+          : raw.includes("Origin not allowed")
+            ? "The server rejected this page's origin. Add this address to TODUCK_ALLOWED_ORIGINS on the server."
+            : raw,
+      );
     }
   }
 
@@ -373,27 +405,23 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       title="Settings"
       description="This device keeps your list. Connect a server when you want the Android app to share it."
     >
-      <section className="mb-6">
-        <SectionLabel>Install</SectionLabel>
-        <p className="mt-2 text-sm text-muted">
-          Add Toduck to your home screen for a full-screen app. Works offline after the first load.
-        </p>
-        {installed ? (
-          <p className="mt-2 text-sm text-sage">Installed.</p>
-        ) : installEvent ? (
-          <Button className="mt-3" variant="primary" onClick={() => void install()}>
-            Install app
-          </Button>
-        ) : (
-          <p className="mt-2 text-sm text-muted">Use your browser’s “Add to Home Screen” or install menu.</p>
-        )}
-      </section>
       <section>
         <SectionLabel>Your server</SectionLabel>
         <p className="mt-2 text-sm text-pretty text-muted">
           Optional. Leave this blank to keep everything here. The address is remembered, but the token is held only for
           this open browser session. External clients such as Android use the same server token separately.
         </p>
+        {sameOrigin && !serverUrl ? (
+          <div className="mt-3 rounded-2xl bg-paper-2 px-4 py-3">
+            <p className="text-sm font-medium">This page is served by your Toduck server.</p>
+            <p className="mt-1 text-sm text-muted">
+              {sameOrigin} — use it instead of typing the address. Your token is still required.
+            </p>
+            <Button className="mt-2" variant="primary" onClick={useSameOrigin}>
+              Use this server
+            </Button>
+          </div>
+        ) : null}
         <label className="mt-3 block text-sm font-medium" htmlFor="server-url">
           Address
         </label>
@@ -410,6 +438,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
         </label>
         <input
           id="server-token"
+          ref={tokenInput}
           className="field mt-1"
           value={token}
           onChange={(event) => setToken(event.target.value)}
@@ -431,9 +460,6 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           >
             Disconnect
           </Button>
-          <a className="inline-flex min-h-11 items-center rounded-full bg-paper-2 px-4 text-sm font-medium text-ink" href="/toduck-pack.zip" download>
-            Download server and Android app
-          </a>
         </div>
         <p className="mt-2 text-sm text-muted" role="status" aria-live="polite">
           {message ??
@@ -446,6 +472,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                   : "Not connected.")}
         </p>
         {serverUrl && serverToken ? <UsersPanel url={serverUrl} token={serverToken} /> : null}
+      </section>
+
+      <section className="mt-6 border-t border-line pt-5">
+        <SectionLabel>Install</SectionLabel>
+        <p className="mt-2 text-sm text-muted">
+          Add Toduck to your home screen for a full-screen app. Works offline after the first load.
+        </p>
+        {installed ? (
+          <p className="mt-2 text-sm text-sage">Installed.</p>
+        ) : installEvent ? (
+          <Button className="mt-3" variant="primary" onClick={() => void install()}>
+            Install app
+          </Button>
+        ) : (
+          <p className="mt-2 text-sm text-muted">Use your browser’s “Add to Home Screen” or install menu.</p>
+        )}
       </section>
 
       <section className="mt-6 border-t border-line pt-5">
@@ -480,7 +522,8 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       </section>
 
       <section className="mt-6 border-t border-line pt-5">
-        <div className="flex flex-wrap gap-2">
+        <SectionLabel>Your list</SectionLabel>
+        <div className="mt-3 flex flex-wrap gap-2">
           <Button onClick={clearDone}>Clear finished</Button>
           <Button
             variant="danger"
