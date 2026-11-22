@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { CategoryPicker, DateChooser, Modal, ProjectPicker, RepeatChooser, SectionLabel } from "@/components/toduck/ui";
+import { CategoryPicker, DateChooser, DetailPane, ProjectPicker, RepeatChooser, SectionLabel } from "@/components/toduck/ui";
 import { Button } from "@/components/toduck/ui";
 import {
+  completionPatch,
+  formatGroupLabel,
   formatWhen,
+  nextOccurrence,
   normalizeRepeat,
+  repeatLabel,
   shownDate,
   todayKey,
   type Category,
@@ -128,27 +132,98 @@ type Draft = {
   repeat: Repeat;
 };
 
-export function Detail({ taskId, onClose }: { taskId: string; onClose: () => void }) {
-  const task = useToduck((s) => s.tasks.find((item) => item.id === taskId && !item.deleted));
+export function Detail({
+  taskId,
+  triggerRef,
+  onClose,
+}: {
+  taskId: string | null;
+  /** The row button that opened the pane; focus returns to it on close. */
+  triggerRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+}) {
+  // The pane is rendered at the screen root, never inside a task row, so
+  // it cannot unmount when the row filters out of the list (the shape of
+  // #74). `shownId` keeps the last task around while the pane animates
+  // closed: clearing the selection at once would unmount the dialog
+  // mid-animation. The close timer only drops the selection after the
+  // 200ms exit animation, and opening another task clears it first.
+  const [shownId, setShownId] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const closeTimer = useRef<number | null>(null);
+  const task = useToduck((s) => (taskId ? s.tasks.find((item) => item.id === taskId && !item.deleted) : undefined));
+  const shownTask = useToduck((s) =>
+    shownId ? s.tasks.find((item) => item.id === shownId && !item.deleted) : undefined,
+  );
   const categories = useToduck((s) => s.categories);
   const projects = useToduck((s) => s.projects);
-  if (!task) return null;
-  return <DetailBody key={task.id} task={task} categories={categories} projects={projects} onClose={onClose} />;
+
+  useEffect(() => {
+    if (!taskId) return;
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setShownId(taskId);
+    setOpen(true);
+  }, [taskId]);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    },
+    [],
+  );
+
+  function requestClose() {
+    setOpen(false);
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(onClose, 250);
+  }
+
+  // The live task while open, so repeat and date changes underneath the
+  // pane (completing a repeat advances it) reflect immediately; the last
+  // shown task while closing, so the exit animation has content.
+  const display = task ?? shownTask;
+  if (!display) return null;
+  return (
+    <DetailBody
+      key={display.id}
+      task={display}
+      categories={categories}
+      projects={projects}
+      open={open}
+      triggerRef={triggerRef}
+      onRequestClose={requestClose}
+    />
+  );
 }
+
+type PaneStatus = { key: number; text: string; undoable: boolean; noticeText?: string };
 
 function DetailBody({
   task,
   categories,
   projects,
-  onClose,
+  open,
+  triggerRef,
+  onRequestClose,
 }: {
   task: Task;
   categories: Category[];
   projects: Project[];
-  onClose: () => void;
+  open: boolean;
+  triggerRef: React.RefObject<HTMLElement | null>;
+  onRequestClose: () => void;
 }) {
   const updateTask = useToduck((s) => s.updateTask);
   const deleteTask = useToduck((s) => s.deleteTask);
+  const toggleTask = useToduck((s) => s.toggleTask);
+  const undo = useToduck((s) => s.undo);
+  // The store notice is the undo handle: its snapshot is what undo()
+  // restores, and the notice bar auto-dismisses after 5s. The pane's Undo
+  // is only offered while that notice is the one this status describes.
+  const notice = useToduck((s) => s.notice);
   const addCategory = useToduck((s) => s.addCategory);
   const addProject = useToduck((s) => s.addProject);
   const today = todayKey();
@@ -160,6 +235,8 @@ function DetailBody({
   const [date, setDate] = useState<string | null>(visibleDate);
   const [repeat, setRepeat] = useState<Repeat>(task.repeat);
   const [repeatOpen, setRepeatOpen] = useState(false);
+  const [status, setStatus] = useState<PaneStatus | null>(null);
+  const statusKey = useRef(0);
   const dateTouched = useRef(false);
   const saved = useRef<Draft>({
     title: task.title,
@@ -170,8 +247,66 @@ function DetailBody({
     repeat: normalizeRepeat(task.repeat),
   });
   const skipSave = useRef(false);
+  const lastSeen = useRef({ date: task.date, repeat: task.repeat });
   const active = categories.filter((c) => !c.deleted).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const activeProjectList = projects.filter((p) => !p.deleted).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+  // The store task can move under the pane: completing a repeat advances
+  // its date, and its row may leave the list at the same moment. The pane
+  // stays open on the same task, so reflect the saved date and repeat —
+  // otherwise the calendar would keep showing the old date. Title and
+  // notes drafts are untouched: they only save on blur or close.
+  useEffect(() => {
+    if (
+      task.date !== lastSeen.current.date ||
+      JSON.stringify(task.repeat) !== JSON.stringify(lastSeen.current.repeat)
+    ) {
+      lastSeen.current = { date: task.date, repeat: task.repeat };
+      setDate(shownDate(task, todayKey()));
+      setRepeat(task.repeat);
+      saved.current = { ...saved.current, date: task.date, repeat: normalizeRepeat(task.repeat) };
+    }
+  }, [task, task.date, task.repeat]);
+
+  function showStatus(text: string, undoable = false, noticeText?: string) {
+    statusKey.current += 1;
+    setStatus({ key: statusKey.current, text, undoable, noticeText });
+  }
+
+  function changeRepeat(next: Repeat) {
+    const rule = normalizeRepeat(next);
+    save({ repeat: next });
+    const anchor = date ?? task.date ?? today;
+    const nextDate = rule.kind === "none" ? null : nextOccurrence(anchor, rule, anchor);
+    showStatus(
+      rule.kind === "none"
+        ? "Doesn't repeat — checking this off finishes it."
+        : nextDate
+          ? `${repeatLabel(rule)} — next is ${formatGroupLabel(nextDate, today)}.`
+          : `${repeatLabel(rule)} — set a date so the next one has somewhere to land.`,
+    );
+  }
+
+  function toggleDone() {
+    const todayNow = todayKey();
+    const patch = completionPatch(task, todayNow, new Date().toISOString());
+    const text =
+      patch.advanced && patch.date
+        ? `Moved to ${formatWhen(patch.date, todayNow)} — checking it off again moves it forward.`
+        : patch.done
+          ? "Completed."
+          : "Restored — back on the list.";
+    // The store notice text toggleTask is about to set (same inputs, same
+    // wording): the pane's Undo is only live while that notice is current.
+    const storeNoticeText =
+      patch.advanced && patch.date
+        ? `Moved repeating toduck to ${formatWhen(patch.date, todayNow)}`
+        : patch.done
+          ? "Completed"
+          : "Restored";
+    toggleTask(task.id);
+    showStatus(text, true, storeNoticeText);
+  }
 
   function save(overrides: Partial<Draft> = {}, notice?: string) {
     const next: Draft = {
@@ -212,14 +347,25 @@ function DetailBody({
 
   function close() {
     if (!skipSave.current) save();
-    onClose();
+    onRequestClose();
   }
 
   return (
-    <Modal
-      open
-      onOpenChange={(open) => {
-        if (!open) close();
+    <DetailPane
+      open={open}
+      onOpenChange={(isOpen) => {
+        if (!isOpen) close();
+      }}
+      onCloseAutoFocus={(event) => {
+        // Radix restores focus to its own Dialog.Trigger, which this pane
+        // does not have — the opener is a row button. Send focus back
+        // there when it is still on screen (the row may have filtered out
+        // while the pane was open; then focus stays where it is).
+        const trigger = triggerRef.current;
+        if (trigger?.isConnected) {
+          event.preventDefault();
+          trigger.focus();
+        }
       }}
       title="Details"
       description="Tag, project, notes, and schedule stay on this toduck."
@@ -283,6 +429,11 @@ function DetailBody({
       <section className="mt-6 border-t border-line pt-5">
         <SectionLabel>Schedule</SectionLabel>
         <div className="mt-2">
+          <Button variant="quiet" onClick={toggleDone}>
+            {task.done ? "Restore" : task.repeat.kind === "none" ? "Mark done" : "Done — move to next time"}
+          </Button>
+        </div>
+        <div className="mt-3">
           <DateChooser
             date={date}
             calendarDefaultOpen
@@ -299,11 +450,31 @@ function DetailBody({
         </Button>
         {repeatOpen ? (
           <div className="mt-3">
-            <RepeatChooser repeat={repeat} date={date} onChange={(next) => save({ repeat: next })} />
+            <RepeatChooser repeat={repeat} date={date} onChange={changeRepeat} />
           </div>
         ) : (
           <p className="mt-2 text-sm text-muted">Only the next time shows on the list. Checking it off moves this toduck forward. Notes stay.</p>
         )}
+        {status ? (
+          <p
+            key={status.key}
+            role="status"
+            className="repeat-flash mt-3 flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm text-ink"
+          >
+            <span>{status.text}</span>
+            {status.undoable && notice?.text === status.noticeText ? (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  undo();
+                  setStatus(null);
+                }}
+              >
+                Undo
+              </Button>
+            ) : null}
+          </p>
+        ) : null}
       </section>
 
       <div className="mt-6 flex justify-end">
@@ -312,12 +483,12 @@ function DetailBody({
           onClick={() => {
             skipSave.current = true;
             deleteTask(task.id);
-            onClose();
+            onRequestClose();
           }}
         >
           Delete toduck
         </Button>
       </div>
-    </Modal>
+    </DetailPane>
   );
 }
