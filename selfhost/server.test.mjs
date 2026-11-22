@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { request as httpRequest } from "node:http";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -123,6 +124,22 @@ test("same-origin browser writes are allowed without an allowlist entry (#36)", 
       headers: auth({ Origin: url.replace("http://", "https://") }),
     });
     assert.equal(tlsTerminated.status, 200);
+    // A TLS-terminating proxy forwards the public Host without a port; an
+    // https Origin with no port must match it (both default to 443).
+    const viaProxy = (host, origin) =>
+      new Promise((resolve, reject) => {
+        const request = httpRequest(`${url}/v1/state`, { headers: auth({ Host: host, Origin: origin }) }, (response) => {
+          response.resume();
+          resolve(response.statusCode);
+        });
+        request.on("error", reject);
+        request.end();
+      });
+    assert.equal(await viaProxy("tasks.example", "https://tasks.example"), 200);
+    assert.equal(await viaProxy("tasks.example:443", "https://tasks.example"), 200);
+    assert.equal(await viaProxy("tasks.example", "http://tasks.example"), 200);
+    assert.equal(await viaProxy("Tasks.Example", "https://tasks.example"), 200);
+    assert.equal(await viaProxy("tasks.example", "https://tasks.example:8443"), 403);
     // A forged X-Forwarded-Host does not vouch for a foreign origin.
     const spoofed = await fetch(`${url}/v1/state`, {
       headers: auth({ Origin: "https://evil.example", "X-Forwarded-Host": "evil.example" }),

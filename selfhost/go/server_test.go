@@ -155,6 +155,32 @@ func TestBodyLimitAndCORSAndHeaders(t *testing.T) {
 		t.Fatalf("TLS-terminated same-origin status %d", tlsTerminatedRes.StatusCode)
 	}
 
+	// A TLS-terminating proxy forwards the public Host without a port. An
+	// https Origin with no port must match it (both default to 443).
+	for _, tc := range []struct{ host, origin string }{
+		{"tasks.example", "https://tasks.example"},
+		{"tasks.example:443", "https://tasks.example"},
+		{"tasks.example", "http://tasks.example"},
+		{"Tasks.Example", "https://tasks.example"},
+	} {
+		proxied, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/state", nil)
+		auth(proxied)
+		proxied.Host = tc.host
+		proxied.Header.Set("Origin", tc.origin)
+		proxiedRes, _ := http.DefaultClient.Do(proxied)
+		if proxiedRes.StatusCode != 200 {
+			t.Fatalf("Host %q with Origin %q status %d, want 200", tc.host, tc.origin, proxiedRes.StatusCode)
+		}
+	}
+	mismatch, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/state", nil)
+	auth(mismatch)
+	mismatch.Host = "tasks.example"
+	mismatch.Header.Set("Origin", "https://tasks.example:8443")
+	mismatchRes, _ := http.DefaultClient.Do(mismatch)
+	if mismatchRes.StatusCode != 403 {
+		t.Fatalf("different explicit port status %d, want 403", mismatchRes.StatusCode)
+	}
+
 	allowed := httptest.NewServer(newServer(config{token: testToken, dataPath: filepath.Join(dir, "allowed.json"), staticDir: dir, allowedOrigins: []string{"https://tasks.example"}}))
 	defer allowed.Close()
 	good, _ := http.NewRequest(http.MethodGet, allowed.URL+"/v1/state", nil)
