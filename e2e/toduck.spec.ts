@@ -394,17 +394,19 @@ test("boot watchdog withdraws its panel when startup finishes late", async ({ br
   }
 });
 
-test("boot watchdog stays quiet on the login route", async ({ browser }) => {
-  // The login page never mounts Home, the only route that used to set
-  // the boot flag, so the watchdog offered its recovery panel over a
-  // healthy login page after 9 seconds. Login rendering now counts as
-  // a finished boot; no panel may appear.
+test("the old /login URL lands on the app and shows no sign-in form", async ({ browser }) => {
+  // There is no client-side sign-in gate: it protected nothing, since tasks live
+  // in browser storage and synced data is guarded by the server's bearer tokens.
+  // An old bookmark must reach the app, not a dead end, and the boot watchdog
+  // must stay quiet on the way.
   test.setTimeout(60_000);
   const context = await browser.newContext();
   const page = await context.newPage();
   try {
     await page.goto("/login");
-    await expect(page.getByText("Auth is off.")).toBeVisible();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByLabel("Password")).toHaveCount(0);
+    await expect(page.getByText("Auth is off.")).toHaveCount(0);
     await page.waitForTimeout(10_500);
     await expect(page.getByText("Toduck is stuck loading")).toHaveCount(0);
   } finally {
