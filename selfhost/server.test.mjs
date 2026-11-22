@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createToduckServer, loadState, validateToken } from "./server.mjs";
+import { createToduckServer, hashToken, loadState, validateToken } from "./server.mjs";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
 
@@ -525,4 +525,117 @@ test("projects round-trip, and payloads without projects still work and do not w
     const body = await (await fetch(`${url}/v1/state`, { headers: auth() })).json();
     assert.deepEqual(body.projects, []);
   });
+});
+
+// Issue #102: the Web UI has no client-side gate that protects data, so the
+// server must refuse every data route without a valid bearer token. These
+// tests enumerate the whole /v1 surface and match selfhost/go/server_test.go.
+
+const PROTECTED_ROUTES = [
+  ["GET", "/v1/state", undefined],
+  ["PUT", "/v1/state", { tasks: [], categories: [] }],
+  ["GET", "/v1/me", undefined],
+  ["GET", "/v1/users", undefined],
+  ["POST", "/v1/users", { name: "x" }],
+  ["DELETE", "/v1/users/someone", undefined],
+  ["GET", "/v1/tasks", undefined],
+  ["POST", "/v1/tasks", { title: "x" }],
+  ["PATCH", "/v1/tasks/abc", { done: true }],
+  ["DELETE", "/v1/tasks/abc", undefined],
+  // Paths no route claims must not fall through to the Web UI shell.
+  ["GET", "/v1", undefined],
+  ["GET", "/v1/", undefined],
+  ["GET", "/v1/unknown", undefined],
+  ["POST", "/v1/state/extra", {}],
+  ["HEAD", "/v1/tasks/abc/extra", undefined],
+];
+
+test("every API route rejects missing and wrong credentials with 401", async () => {
+  await withServer(async ({ url }) => {
+    const credentials = {
+      "no token": "",
+      "wrong token": "not-the-token",
+      "admin token minus 1": TOKEN.slice(0, -1),
+      "admin token plus 1": `${TOKEN}x`,
+      "hash of admin token": hashToken(TOKEN),
+      "admin token reversed": [...TOKEN].reverse().join(""),
+    };
+    for (const [name, token] of Object.entries(credentials)) {
+      for (const [method, path, body] of PROTECTED_ROUTES) {
+        const response = await rest(url, token, method, path, body);
+        const text = await response.text();
+        assert.equal(response.status, 401, `${name}: ${method} ${path}`);
+        assert.ok(!text.includes("<html"), `${name}: ${method} ${path} returned the Web UI shell`);
+      }
+    }
+  });
+});
+
+test("data is never served without a token even when the Web UI shell exists", async () => {
+  await withServer(async ({ url, dir }) => {
+    await writeFile(join(dir, "index.html"), "<html>shell</html>");
+    const seeded = await rest(url, TOKEN, "POST", "/v1/tasks", { title: "Private note" });
+    assert.equal(seeded.status, 201);
+    // The shell is public by design and carries no task data.
+    const shell = await fetch(`${url}/`);
+    assert.equal(shell.status, 200);
+    assert.ok(!(await shell.text()).includes("Private note"));
+    for (const path of ["/v1/state", "/v1/tasks", "/v1/anything"]) {
+      const response = await rest(url, "", "GET", path);
+      const text = await response.text();
+      assert.equal(response.status, 401, path);
+      assert.ok(!text.includes("Private note") && !text.includes("<html"), path);
+    }
+    // With the token, an unknown API path is a JSON 404, not the shell.
+    const unknown = await rest(url, TOKEN, "GET", "/v1/anything");
+    assert.equal(unknown.status, 404);
+    assert.ok(!(await unknown.text()).includes("<html"));
+  });
+});
+
+test("a deleted user's personal token is revoked immediately on every route", async () => {
+  await withServer(async ({ url }) => {
+    const alice = await createUser(url, "Alice");
+    assert.equal((await rest(url, alice.token, "POST", "/v1/tasks", { title: "Alice only" })).status, 201);
+    for (const [method, path, body] of PROTECTED_ROUTES.slice(0, 4)) {
+      const response = await rest(url, alice.token, method, path, body);
+      assert.notEqual(response.status, 401, `live token rejected on ${method} ${path}`);
+    }
+    assert.equal((await rest(url, TOKEN, "DELETE", `/v1/users/${alice.id}`)).status, 200);
+    for (const [method, path, body] of PROTECTED_ROUTES) {
+      const response = await rest(url, alice.token, method, path, body);
+      assert.equal(response.status, 401, `revoked token: ${method} ${path}`);
+    }
+  });
+});
+
+test("a personal token cannot use admin-only routes or read other users' tasks", async () => {
+  await withServer(async ({ url }) => {
+    const alice = await createUser(url, "Alice");
+    const bob = await createUser(url, "Bob");
+    await rest(url, alice.token, "POST", "/v1/tasks", { title: "Alice secret" });
+    await rest(url, TOKEN, "POST", "/v1/tasks", { title: "Admin legacy" });
+    assert.equal((await rest(url, bob.token, "POST", "/v1/users", { name: "Mallory" })).status, 403);
+    assert.equal((await rest(url, bob.token, "DELETE", `/v1/users/${alice.id}`)).status, 403);
+    for (const path of ["/v1/state", "/v1/tasks"]) {
+      const response = await rest(url, bob.token, "GET", path);
+      assert.equal(response.status, 200, path);
+      const text = await response.text();
+      assert.ok(!text.includes("Alice secret") && !text.includes("Admin legacy"), `${path} leaked: ${text}`);
+    }
+  });
+});
+
+test("CORS and origin checks never stand in for authentication", async () => {
+  await withServer(
+    async ({ url }) => {
+      const foreign = await fetch(`${url}/v1/state`, { headers: { ...auth(), Origin: "https://evil.example" } });
+      assert.equal(foreign.status, 403);
+      const allowedNoToken = await fetch(`${url}/v1/state`, { headers: { Origin: "https://allowed.example" } });
+      assert.equal(allowedNoToken.status, 401);
+      const foreignUnknown = await fetch(`${url}/v1/unknown`, { headers: { Origin: "https://evil.example" } });
+      assert.equal(foreignUnknown.status, 403);
+    },
+    { allowedOrigins: ["https://allowed.example"] },
+  );
 });

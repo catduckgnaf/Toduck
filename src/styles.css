@@ -165,13 +165,48 @@
   }
 }
 
+/* Task details live in a right-side pane: full height, docked right, at
+   most 30rem wide. On small screens the min() makes it full-width, so it
+   still covers the list instead of squeezing beside it. */
+.detail-pane {
+  position: fixed;
+  z-index: 51;
+  top: 0;
+  right: 0;
+  height: 100dvh;
+  width: min(30rem, 100vw);
+  overflow-y: auto;
+  border-left: 1px solid var(--color-line);
+  background: var(--color-paper);
+  padding: 1.25rem;
+  padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+}
+
 @media (prefers-reduced-motion: no-preference) {
   .modal-overlay {
     animation: toduck-fade 150ms ease;
   }
 
+  .modal-overlay[data-state="closed"] {
+    animation: toduck-fade-out 200ms ease;
+  }
+
   .modal-content {
     animation: toduck-pop 250ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .detail-pane[data-state="open"] {
+    animation: toduck-pane-in 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .detail-pane[data-state="closed"] {
+    animation: toduck-pane-out 200ms ease;
+  }
+
+  /* Repeat/completion feedback in the pane: a brief highlight that fades
+     out, so a change is visible without moving anything. */
+  .repeat-flash {
+    animation: toduck-flash 700ms ease;
   }
 }
 
@@ -187,6 +222,46 @@
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes toduck-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes toduck-pane-in {
+  from {
+    opacity: 0;
+    transform: translateX(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes toduck-pane-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(2rem);
+  }
+}
+
+@keyframes toduck-flash {
+  from {
+    background: rgb(255 255 255 / 0.09);
+  }
+  to {
+    background: transparent;
   }
 }
 
