@@ -245,6 +245,39 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(page.getByText("Daily quick task", { exact: true })).toHaveCount(0);
 });
 
+test("row date sits next to the task title, not at the far right", async ({ page }) => {
+  await page.getByLabel("New toduck").fill("Close date task");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Close date task" });
+  await expect(row).toBeVisible();
+  const title = row.getByRole("button", { name: "Details for Close date task" });
+  const dateInput = row.getByLabel(/Change date for Close date task/);
+  await expect(dateInput).toBeVisible();
+
+  const expectDateBesideTitle = async () => {
+    const titleBox = await title.boundingBox();
+    const dateBox = await dateInput.boundingBox();
+    const rowBox = await row.boundingBox();
+    expect(titleBox).not.toBeNull();
+    expect(dateBox).not.toBeNull();
+    expect(rowBox).not.toBeNull();
+    // Same line, immediately after the title text, not overlapping it.
+    expect(Math.abs(dateBox!.y - titleBox!.y)).toBeLessThan(8);
+    const gap = dateBox!.x - (titleBox!.x + titleBox!.width);
+    expect(gap).toBeGreaterThanOrEqual(0);
+    expect(gap).toBeLessThan(24);
+    // And not pinned to the far right edge of the row.
+    expect(rowBox!.x + rowBox!.width - (dateBox!.x + dateBox!.width)).toBeGreaterThan(40);
+  };
+  await expectDateBesideTitle();
+
+  // Compact mode hides the notes preview, but the date stays beside the title.
+  await openSidebarIfNeeded(page);
+  await page.getByRole("button", { name: "Compact", exact: true }).click();
+  await closeSidebarIfOpen(page);
+  await expectDateBesideTitle();
+});
+
 test("composer quick dates set the new toduck's date", async ({ page }) => {
   const key = (date: Date) => {
     const y = date.getFullYear();
