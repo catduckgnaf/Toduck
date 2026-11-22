@@ -636,7 +636,13 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         send(res, 403, JSON.stringify({ error: "Only an admin can change users" }), undefined, headers);
         return;
       }
-      const targetId = decodeURIComponent(userDeleteMatch[1]);
+      let targetId;
+      try {
+        targetId = decodeURIComponent(userDeleteMatch[1]);
+      } catch {
+        send(res, 400, JSON.stringify({ error: "Invalid user ID" }), undefined, headers);
+        return;
+      }
       let rawBody = "";
       try {
         rawBody = await readBody(req, maxBody);

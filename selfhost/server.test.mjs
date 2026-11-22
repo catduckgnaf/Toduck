@@ -651,6 +651,16 @@ test("roles: admin-role users manage users, user-role users cannot, disabled use
     });
     assert.equal(empty.status, 400);
 
+    // Invalid percent escapes in a user ID return a client error without
+    // rejecting the async request handler.
+    const malformedId = await fetch(`${url}/v1/users/%`, {
+      method: "PATCH",
+      headers: { ...auth(), "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: true }),
+    });
+    assert.equal(malformedId.status, 400);
+    assert.deepEqual(await malformedId.json(), { error: "Invalid user ID" });
+
     // Disable the plain user: their token stops working everywhere.
     const patched = await fetch(`${url}/v1/users/${plain.id}`, {
       method: "PATCH",
