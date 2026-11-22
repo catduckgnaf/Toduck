@@ -984,6 +984,23 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
       return;
     }
 
+    // The API namespace never falls through to the static Web UI shell: a
+    // caller without a valid bearer token gets 401 exactly as on a real route,
+    // so the response does not reveal which paths exist.
+    if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
+      if (!originAllowed(req)) {
+        send(res, 403, JSON.stringify({ error: "Origin not allowed" }));
+        return;
+      }
+      const headers = corsHeaders(req);
+      if (!authenticate(state, configuredToken, req.headers.authorization)) {
+        send(res, 401, JSON.stringify({ error: "Unauthorized" }), undefined, headers);
+        return;
+      }
+      send(res, 404, JSON.stringify({ error: "Not found" }), undefined, headers);
+      return;
+    }
+
     if ((req.method === "GET" || req.method === "HEAD") && serveStatic(req, res, url.pathname)) return;
     send(res, 404, JSON.stringify({ error: "Not found" }));
   });

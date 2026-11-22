@@ -812,6 +812,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.usersEndpoint(w, r)
 	case strings.HasPrefix(r.URL.Path, "/v1/users/") && (r.Method == http.MethodDelete || r.Method == http.MethodPatch):
 		s.usersEndpoint(w, r)
+	case r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/"):
+		s.unknownAPI(w, r)
 	case r.Method == http.MethodGet || r.Method == http.MethodHead:
 		if !s.serveStatic(w, r) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "Not found"})
@@ -819,6 +821,23 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Not found"})
 	}
+}
+
+// unknownAPI answers any /v1 request no route claimed. The API namespace
+// never falls through to the static Web UI shell: a caller without a valid
+// bearer token gets 401 exactly as on a real route, so the response does not
+// reveal which paths exist, and an authenticated caller gets a JSON 404.
+func (s *server) unknownAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.originAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Origin not allowed"})
+		return
+	}
+	s.cors(w, r)
+	if _, _, ok := s.authenticate(r); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "Not found"})
 }
 
 func (s *server) originAllowed(r *http.Request) bool {

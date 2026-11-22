@@ -946,6 +946,138 @@ func TestUserPutCannotReplaceCategoriesOrProjects(t *testing.T) {
 }
 
 func TestDeleteUserBumpsRevisionAndReassignsTasks(t *testing.T) {
+// Issue #102: the Web UI has no client-side gate that protects data, so the
+// server must refuse every data route without a valid bearer token. These
+// tests enumerate the whole /v1 surface.
+
+type authRoute struct {
+	method, path, body string
+}
+
+func protectedRoutes() []authRoute {
+	return []authRoute{
+		{http.MethodGet, "/v1/state", ""},
+		{http.MethodPut, "/v1/state", `{"tasks":[],"categories":[]}`},
+		{http.MethodGet, "/v1/me", ""},
+		{http.MethodGet, "/v1/users", ""},
+		{http.MethodPost, "/v1/users", `{"name":"x"}`},
+		{http.MethodDelete, "/v1/users/someone", ""},
+		{http.MethodGet, "/v1/tasks", ""},
+		{http.MethodPost, "/v1/tasks", `{"title":"x"}`},
+		{http.MethodPatch, "/v1/tasks/abc", `{"done":true}`},
+		{http.MethodDelete, "/v1/tasks/abc", ""},
+		// Paths no route claims must not fall through to the Web UI shell.
+		{http.MethodGet, "/v1", ""},
+		{http.MethodGet, "/v1/", ""},
+		{http.MethodGet, "/v1/unknown", ""},
+		{http.MethodPost, "/v1/state/extra", `{}`},
+		{http.MethodHead, "/v1/tasks/abc/extra", ""},
+	}
+}
+
+func TestEveryAPIRouteRejectsMissingAndWrongCredentials(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	credentials := map[string]string{
+		"no token":             "",
+		"wrong token":          "not-the-token",
+		"empty bearer":         " ",
+		"admin token minus 1":  testToken[:len(testToken)-1],
+		"admin token plus 1":   testToken + "x",
+		"hash of admin token":  hashToken(testToken),
+		"admin token reversed": reverseString(testToken),
+	}
+	for name, token := range credentials {
+		for _, route := range protectedRoutes() {
+			res := doRequest(t, route.method, server.URL+route.path, token, route.body, nil)
+			body, _ := io.ReadAll(res.Body)
+			res.Body.Close()
+			if res.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("%s: %s %s status %d, want 401", name, route.method, route.path, res.StatusCode)
+			}
+			if strings.Contains(string(body), "<html") {
+				t.Fatalf("%s: %s %s returned the Web UI shell instead of an API error", name, route.method, route.path)
+			}
+		}
+	}
+}
+
+func reverseString(value string) string {
+	runes := []rune(value)
+	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
+		runes[i], runes[j] = runes[j], runes[i]
+	}
+	return string(runes)
+}
+
+func TestDataIsNotServedWithoutTokenEvenWhenTheWebUIShellExists(t *testing.T) {
+	server, dir := newTestServer(t)
+	defer server.Close()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>shell</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a task through the authenticated API.
+	created := doRest(t, http.MethodPost, server.URL+"/v1/tasks", testToken, `{"title":"Private note"}`)
+	created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		t.Fatalf("seed status %d", created.StatusCode)
+	}
+	// The shell is public by design; it must not contain task data.
+	shell := doRest(t, http.MethodGet, server.URL+"/", "", "")
+	shellBody, _ := io.ReadAll(shell.Body)
+	shell.Body.Close()
+	if shell.StatusCode != http.StatusOK || strings.Contains(string(shellBody), "Private note") {
+		t.Fatalf("shell status %d or leaked task data", shell.StatusCode)
+	}
+	// Deep links still get the shell (client routing), but /v1 never does.
+	for _, path := range []string{"/v1/state", "/v1/tasks", "/v1/anything"} {
+		res := doRest(t, http.MethodGet, server.URL+path, "", "")
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized || strings.Contains(string(body), "Private note") || strings.Contains(string(body), "<html") {
+			t.Fatalf("%s: status %d body %q", path, res.StatusCode, body)
+		}
+	}
+	// With the token, an unknown API path is a JSON 404, not the shell.
+	res := doRest(t, http.MethodGet, server.URL+"/v1/anything", testToken, "")
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound || strings.Contains(string(body), "<html") {
+		t.Fatalf("authenticated unknown path status %d body %q", res.StatusCode, body)
+	}
+}
+
+func TestPersonalTokenIsRevokedImmediatelyOnUserDeletion(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	alice := createUserGo(t, server.URL, "Alice")
+	seed := doRest(t, http.MethodPost, server.URL+"/v1/tasks", alice.Token, `{"title":"Alice only"}`)
+	seed.Body.Close()
+	if seed.StatusCode != http.StatusCreated {
+		t.Fatalf("seed status %d", seed.StatusCode)
+	}
+	for _, route := range protectedRoutes()[:4] {
+		res := doRequest(t, route.method, server.URL+route.path, alice.Token, route.body, nil)
+		res.Body.Close()
+		if res.StatusCode == http.StatusUnauthorized {
+			t.Fatalf("live personal token rejected on %s %s", route.method, route.path)
+		}
+	}
+	del := doRest(t, http.MethodDelete, server.URL+"/v1/users/"+alice.ID, testToken, "")
+	del.Body.Close()
+	if del.StatusCode != http.StatusOK {
+		t.Fatalf("delete status %d", del.StatusCode)
+	}
+	for _, route := range protectedRoutes() {
+		res := doRequest(t, route.method, server.URL+route.path, alice.Token, route.body, nil)
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("revoked token: %s %s status %d, want 401", route.method, route.path, res.StatusCode)
+		}
+	}
+}
+
+func TestPersonalTokenCannotReachAdminOnlyOrOtherUsersData(t *testing.T) {
 	server, _ := newTestServer(t)
 	defer server.Close()
 	alice := createUserGo(t, server.URL, "Alice")
@@ -1049,5 +1181,54 @@ func TestSharedUserCannotUndeleteTombstonedTask(t *testing.T) {
 	json.Unmarshal(state["tasks"], &undeleted)
 	if deleted, _ := undeleted[0]["deleted"].(bool); deleted {
 		t.Fatalf("owner could not undelete %+v", undeleted)
+	seed := doRest(t, http.MethodPost, server.URL+"/v1/tasks", alice.Token, `{"title":"Alice secret"}`)
+	seed.Body.Close()
+	legacy := doRest(t, http.MethodPost, server.URL+"/v1/tasks", testToken, `{"title":"Admin legacy"}`)
+	legacy.Body.Close()
+
+	forbidden := []authRoute{
+		{http.MethodPost, "/v1/users", `{"name":"Mallory"}`},
+		{http.MethodDelete, "/v1/users/" + alice.ID, ""},
+	}
+	for _, route := range forbidden {
+		res := doRequest(t, route.method, server.URL+route.path, bob.Token, route.body, nil)
+		res.Body.Close()
+		if res.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s %s with a personal token status %d, want 403", route.method, route.path, res.StatusCode)
+		}
+	}
+	for _, path := range []string{"/v1/state", "/v1/tasks"} {
+		res := doRest(t, http.MethodGet, server.URL+path, bob.Token, "")
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s status %d", path, res.StatusCode)
+		}
+		if strings.Contains(string(body), "Alice secret") || strings.Contains(string(body), "Admin legacy") {
+			t.Fatalf("%s leaked another user's task to Bob: %s", path, body)
+		}
+	}
+}
+
+func TestCrossOriginAndPreflightNeverGrantAccess(t *testing.T) {
+	server, _ := newTestServer(t, "https://allowed.example")
+	defer server.Close()
+	// A foreign origin is refused even with the right token.
+	res := doRequest(t, http.MethodGet, server.URL+"/v1/state", testToken, "", map[string]string{"Origin": "https://evil.example"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign origin with token status %d, want 403", res.StatusCode)
+	}
+	// An allowed origin still needs the token: CORS is not authentication.
+	res = doRequest(t, http.MethodGet, server.URL+"/v1/state", "", "", map[string]string{"Origin": "https://allowed.example"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("allowed origin without token status %d, want 401", res.StatusCode)
+	}
+	// Unknown API paths from a foreign origin are refused before auth.
+	res = doRequest(t, http.MethodGet, server.URL+"/v1/unknown", "", "", map[string]string{"Origin": "https://evil.example"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign origin on unknown path status %d, want 403", res.StatusCode)
 	}
 }
