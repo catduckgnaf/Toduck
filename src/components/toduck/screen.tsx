@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu, Settings, X } from "lucide-react";
 import { Detail } from "@/components/toduck/detail";
 import { CategoriesDialog, ProjectsDialog, SettingsDialog } from "@/components/toduck/settings";
@@ -58,6 +58,9 @@ export function ToduckShell() {
 export function ToduckScreen() {
   const state = useToduck();
   const [detailId, setDetailId] = useState<string | null>(null);
+  // The row button that opened the details pane; focus returns to it when
+  // the pane closes (the pane has no Radix Trigger of its own).
+  const detailTriggerRef = useRef<HTMLElement | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [projectsManageOpen, setProjectsManageOpen] = useState(false);
@@ -74,9 +77,13 @@ export function ToduckScreen() {
 
   useEffect(() => {
     if (!state.notice) return;
+    // The details pane covers the notice bar, and its Undo is the notice's
+    // undo — so the 5s dismissal waits until the pane closes instead of
+    // expiring the undo while the pane is open.
+    if (detailId) return;
     const id = window.setTimeout(() => state.dismissNotice(), 5000);
     return () => window.clearTimeout(id);
-  }, [state.notice, state.dismissNotice]);
+  }, [state.notice, state.dismissNotice, detailId]);
 
   const today = todayKey();
   const focus = state.focusDate || today;
@@ -138,7 +145,10 @@ export function ToduckScreen() {
               project={projectName(state.projects, task.projectId)}
               today={today}
               compact={state.compact}
-              onOpen={() => setDetailId(task.id)}
+              onOpen={(trigger) => {
+                detailTriggerRef.current = trigger;
+                setDetailId(task.id);
+              }}
             />
           ))}
         </ul>
@@ -344,7 +354,10 @@ export function ToduckScreen() {
                             project={projectName(state.projects, task.projectId)}
                             today={today}
                             compact={state.compact}
-                            onOpen={() => setDetailId(task.id)}
+                            onOpen={(trigger) => {
+                              detailTriggerRef.current = trigger;
+                              setDetailId(task.id);
+                            }}
                           />
                         ))}
                       </ul>
@@ -389,7 +402,7 @@ export function ToduckScreen() {
         <Composer view={state.view} focus={focus} categoryFilter={state.categoryFilter} projectFilter={state.projectFilter} />
       </div>
 
-        {detailId ? <Detail taskId={detailId} onClose={() => setDetailId(null)} /> : null}
+        <Detail taskId={detailId} triggerRef={detailTriggerRef} onClose={() => setDetailId(null)} />
         {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
         {categoriesOpen ? <CategoriesDialog onClose={() => setCategoriesOpen(false)} /> : null}
         {projectsManageOpen ? <ProjectsDialog onClose={() => setProjectsManageOpen(false)} /> : null}
@@ -587,7 +600,7 @@ function TaskRow({
   project: string | null;
   today: string;
   compact: boolean;
-  onOpen: () => void;
+  onOpen: (trigger: HTMLElement) => void;
 }) {
   const moveTask = useToduck((s) => s.moveTask);
   const toggleTask = useToduck((s) => s.toggleTask);
@@ -618,9 +631,35 @@ function TaskRow({
           </span>
         </button>
         <div className="min-w-0 flex-1 py-0.5 text-left">
-          <button type="button" className="block w-full truncate text-left" onClick={onOpen} aria-label={`Details for ${task.title}`}>
-            <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
-          </button>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <button
+              type="button"
+              className="min-w-0 flex-[0_1_auto] truncate text-left"
+              onClick={(event) => onOpen(event.currentTarget)}
+              aria-label={`Details for ${task.title}`}
+            >
+              <span className={`block truncate text-sm font-medium ${task.done ? "text-muted line-through" : "text-ink"}`}>{task.title}</span>
+            </button>
+            <div className={`relative shrink-0 rounded px-1 py-0.5 text-xs font-medium tabular-nums whitespace-nowrap ${horizonClass(horizon)}`}>
+              <span aria-hidden="true">{formatWhen(when, today)}</span>
+              <input
+                type="date"
+                className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                aria-label={`Change date for ${task.title}, currently ${formatWhen(when, today)}`}
+                value={when}
+                onClick={(event) => {
+                  try {
+                    event.currentTarget.showPicker();
+                  } catch {
+                    // Some browsers already open the picker from the click itself.
+                  }
+                }}
+                onChange={(event) => {
+                  if (event.target.value) moveTask(task.id, event.target.value);
+                }}
+              />
+            </div>
+          </div>
           <span className="mt-0.5 flex min-w-0 items-center gap-1.5">
             <button
               type="button"
@@ -660,25 +699,6 @@ function TaskRow({
           {!compact && notePreviewSafe(task.notes) ? (
             <span className="mt-0.5 hidden truncate text-xs text-faint md:block">{notePreviewSafe(task.notes)}</span>
           ) : null}
-        </div>
-        <div className={`relative shrink-0 pl-2 text-right text-xs font-medium tabular-nums whitespace-nowrap ${horizonClass(horizon)}`}>
-          <span aria-hidden="true">{formatWhen(when, today)}</span>
-          <input
-            type="date"
-            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-            aria-label={`Change date for ${task.title}, currently ${formatWhen(when, today)}`}
-            value={when}
-            onClick={(event) => {
-              try {
-                event.currentTarget.showPicker();
-              } catch {
-                // Some browsers already open the picker from the click itself.
-              }
-            }}
-            onChange={(event) => {
-              if (event.target.value) moveTask(task.id, event.target.value);
-            }}
-          />
         </div>
       </div>
       {projectOpen ? (
