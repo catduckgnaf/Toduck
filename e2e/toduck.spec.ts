@@ -233,16 +233,16 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(quickRow).toContainText("Row Project");
 
   // Checking off a repeating task moves it to its next date; it is not "done".
-  await page.getByLabel("New toduck").fill("Daily quick task");
+  await page.getByLabel("New toduck").fill("Recurring quick task");
   await page.getByLabel("Repeat", { exact: true }).selectOption("daily");
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  const dailyRow = page.getByRole("listitem").filter({ hasText: "Daily quick task" });
+  const dailyRow = page.getByRole("listitem").filter({ hasText: "Recurring quick task" });
   await expect(dailyRow).toBeVisible();
-  await dailyRow.getByRole("checkbox", { name: /Done\. Move Daily quick task/ }).click();
+  await dailyRow.getByRole("checkbox", { name: /Done\. Move Recurring quick task/ }).click();
   await expect(page.getByText("Moved repeating toduck to Tomorrow")).toBeVisible();
-  await expect(dailyRow.getByLabel(/Change date for Daily quick task/)).toHaveValue(tomorrow);
+  await expect(dailyRow.getByLabel(/Change date for Recurring quick task/)).toHaveValue(tomorrow);
   await clickNav(page, /^Done/);
-  await expect(page.getByText("Daily quick task", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Recurring quick task", { exact: true })).toHaveCount(0);
 });
 
 test("composer quick dates set the new toduck's date", async ({ page }) => {
@@ -263,6 +263,46 @@ test("composer quick dates set the new toduck's date", async ({ page }) => {
   const row = page.getByRole("listitem").filter({ hasText: "Preset date task" });
   await expect(row).toBeVisible();
   await expect(row.getByLabel(/Change date for Preset date task/)).toHaveValue(nextSunday);
+});
+
+test("composer natural language preview parses dates, times and typos before adding", async ({ page }) => {
+  const key = (date: Date) => {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, "0");
+    const d = String(date.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  };
+  const now = new Date();
+  const tomorrow = key(new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1));
+
+  await page.getByLabel("New toduck").fill("NL preview task tomorrow at 3pm");
+  const preview = page.getByRole("region", { name: "Task preview" });
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("Preview: NL preview task");
+  await expect(preview).toContainText("Tomorrow");
+  await expect(preview).toContainText("At 3:00 PM");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "NL preview task" });
+  await expect(row).toBeVisible();
+  await expect(row.getByLabel(/Change date for NL preview task/)).toHaveValue(tomorrow);
+
+  // A typo'd date word is a flagged suggestion, not a silent correction.
+  await page.getByLabel("New toduck").fill("NL fuzzy task tommorow");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("Suggested from");
+  await expect(preview).toContainText("Tomorrow");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const fuzzyRow = page.getByRole("listitem").filter({ hasText: "NL fuzzy task" });
+  await expect(fuzzyRow).toBeVisible();
+  await expect(fuzzyRow.getByLabel(/Change date for NL fuzzy task/)).toHaveValue(tomorrow);
+
+  // An ambiguous time stays unresolved until the user picks a reading.
+  await page.getByLabel("New toduck").fill("NL ambiguous task at 5");
+  await expect(preview).toBeVisible();
+  await expect(preview).toContainText("could be:");
+  await page.getByRole("button", { name: "5:00 PM", exact: true }).click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByText("NL ambiguous task", { exact: true })).toBeVisible();
 });
 
 test("self-host server serves a page whose inline scripts run", async ({ page }, testInfo) => {
