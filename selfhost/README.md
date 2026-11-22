@@ -106,14 +106,28 @@ A server can host several registered users alongside the admin:
   `GET`/`PUT /v1/state` semantics exactly as before, so existing Web and
   Android clients keep working unchanged. Accounts are admin-created —
   there is no open self-registration.
-* **Create a user (admin only):** `POST /v1/users` with `{"name": "…"}` →
-  `201 {"id", "name", "token"}`. The personal token is returned **once**;
-  the server stores only its SHA-256 hash in the state file. In the Web
-  UI, connect with the admin token and use the Users panel in Settings.
-* **Directory (any authenticated token):** `GET /v1/users` → `[{id, name}]`.
-* **Who am I:** `GET /v1/me` → `{"kind": "admin"}` or `{"kind": "user", "id", "name"}`.
+* **Roles:** every user is `admin` or `user` (the default). Admin-role users
+  may manage users — create, change, disable, delete — but whole-state sync
+  stays admin-token-only. A `disabled` user's token stops working
+  everywhere until an admin re-enables them. Older user records without the
+  fields read as enabled users, so existing state migrates on first load.
+* **Create a user (admin only):** `POST /v1/users` with `{"name": "…",
+  "role": "user"}` → `201 {"id", "name", "token", "role"}`. The personal
+  token is returned **once**; the server stores only its SHA-256 hash in
+  the state file. In the Web UI, connect with the admin token and use the
+  Users panel in Settings.
+* **Change a user (admin only):** `PATCH /v1/users/:id` with any of
+  `{"name", "role", "disabled"}` → `200 {"id", "name", "role", "disabled"}`.
+* **Directory (any authenticated token):** `GET /v1/users` →
+  `[{id, name, role, disabled}]`.
+* **Who am I:** `GET /v1/me` → `{"kind": "admin", "role": "admin"}` or
+  `{"kind": "user", "id", "name", "role", "disabled"}`.
 * **Delete a user (admin only):** `DELETE /v1/users/:id` revokes their
-  access and removes them from every task's sharing list.
+  access, removes them from every task's sharing list, moves their own
+  tasks to the admin (never orphans them), and bumps the state revision so
+  a stale client cannot write the removed user back. Returns
+  `{"ok": true, "revision"}`. In the Web UI the delete asks first and
+  offers Undo, which restores the person with a new one-time token.
 
 Each task carries `ownerId` (a user id, or `null` for legacy tasks not
 owned by any user) and `sharedWith` (user ids). With a **personal token**:
@@ -126,11 +140,23 @@ owned by any user) and `sharedWith` (user ids). With a **personal token**:
   own omitted tasks are deleted, and shared tasks stay editable by them —
   but a shared user cannot delete the owner's task, change its owner, or
   change who it is shared with (only the owner or the admin can share and
-  unshare).
+  unshare). A shared user also cannot undelete the owner's tombstoned task.
+  Categories and projects are shared, not owned: a user `PUT` keeps every
+  stored entry and only adds entries with ids it has never seen — it can
+  never rename or delete one. An admin `PUT` still replaces them wholesale,
+  but references to users who no longer exist are dropped.
 
 Users connect from the Web UI with the server address and their personal
 token, exactly like the admin flow. Per-user sign-in in the Android app is
 not included; Android keeps using the admin token.
+
+Web-app sign-in is separate: the Web UI's own sign-in (Better Auth,
+`/api/auth`) guards the app surface, while this sync server keeps its own
+admin and personal tokens. A web session does not by itself authorize
+`/v1/*` — the admin creates a personal token per person in the Users panel
+and hands it over. Single sign-on between the web session and the sync
+server (one login for both) needs a shared secret or database between the
+two processes and is a follow-up, not part of this setup.
 
 ## REST task API
 

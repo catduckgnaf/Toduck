@@ -726,6 +726,64 @@ test("multi-user: admin creates a user, shares a toduck, and the user's token se
   }
 });
 
+test("multi-user: deleting a user asks first and offers undo", async ({ page }, testInfo) => {
+  const port = 18793 + testInfo.workerIndex;
+  const server = await startSyncServer(port);
+  try {
+    // Connect as admin.
+    await openSidebarIfNeeded(page);
+    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByLabel("Address").fill(`http://127.0.0.1:${port}`);
+    await page.getByLabel("Token").fill(token);
+    await page.getByRole("button", { name: "Save and sync" }).click();
+    await expect(page.getByText(/Connected\./)).toBeVisible();
+
+    // Create a user and capture the one-time token.
+    await page.getByLabel("New user's name").fill("Removable");
+    await page.getByRole("button", { name: "Create user" }).click();
+    const tokenField = page.getByLabel("New user token");
+    await expect(tokenField).toBeVisible();
+    const oldToken = await tokenField.inputValue();
+    expect(oldToken.length).toBeGreaterThanOrEqual(32);
+
+    // The trash button asks first: cancelling keeps the user.
+    await page.getByRole("button", { name: "Delete user Removable" }).click();
+    await expect(page.getByText("Delete Removable?")).toBeVisible();
+    await expect(page.getByText(/will lose access at once/)).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByText("Delete Removable?")).toHaveCount(0);
+    await expect(page.getByText("Removable", { exact: true })).toBeVisible();
+
+    // Confirming removes the user and offers Undo; the old token is dead.
+    await page.getByRole("button", { name: "Delete user Removable" }).click();
+    await page.getByRole("button", { name: "Delete user", exact: true }).click();
+    await expect(page.getByText(/Removable removed\./)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+    await expect(page.getByText("Removable", { exact: true })).toHaveCount(0);
+    const asOld = await fetch(`http://127.0.0.1:${port}/v1/state`, {
+      headers: { authorization: `Bearer ${oldToken}` },
+    });
+    expect(asOld.status).toBe(401);
+
+    // Undo restores the person with a NEW token.
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText(/restored with a new personal token/)).toBeVisible();
+    await expect(tokenField).toBeVisible();
+    const newToken = await tokenField.inputValue();
+    expect(newToken).not.toBe(oldToken);
+    await expect(page.getByText("Removable", { exact: true })).toBeVisible();
+    const asNew = await fetch(`http://127.0.0.1:${port}/v1/state`, {
+      headers: { authorization: `Bearer ${newToken}` },
+    });
+    expect(asNew.status).toBe(200);
+
+    await page.keyboard.press("Escape");
+  } finally {
+    server.child.kill();
+    await rm(server.directory, { recursive: true, force: true });
+  }
+});
+
 test("adding works when crypto.randomUUID is unavailable (plain-http LAN origins)", async ({ browser }) => {
   // crypto.randomUUID only exists in secure contexts. The self-host Docker
   // UI is usually opened at a plain-http LAN address, where it is undefined

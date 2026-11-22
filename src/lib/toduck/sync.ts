@@ -203,9 +203,15 @@ export async function checkServer(url: string, token: string): Promise<void> {
 export type DirectoryUser = {
   id: string;
   name: string;
+  /** "admin" users may manage users; "user" is the default. Older servers omit it. */
+  role: "admin" | "user";
+  /** A disabled user's token stops working until an admin re-enables them. */
+  disabled: boolean;
 };
 
-export type ServerIdentity = { kind: "admin" } | { kind: "user"; id: string; name: string };
+export type ServerIdentity =
+  | { kind: "admin"; role: "admin" }
+  | { kind: "user"; id: string; name: string; role: "admin" | "user"; disabled: boolean };
 
 /**
  * Who the given token is on this server. Servers from before multi-user
@@ -215,41 +221,86 @@ export type ServerIdentity = { kind: "admin" } | { kind: "user"; id: string; nam
 export async function fetchMe(url: string, token: string): Promise<ServerIdentity> {
   try {
     const res = await request(url, token, "/v1/me");
-    const body = (await res.json()) as { kind?: unknown; id?: unknown; name?: unknown };
+    const body = (await res.json()) as { kind?: unknown; id?: unknown; name?: unknown; role?: unknown; disabled?: unknown };
     if (body.kind === "user" && typeof body.id === "string" && typeof body.name === "string") {
-      return { kind: "user", id: body.id, name: body.name };
+      return {
+        kind: "user",
+        id: body.id,
+        name: body.name,
+        role: body.role === "admin" ? "admin" : "user",
+        disabled: body.disabled === true,
+      };
     }
-    return { kind: "admin" };
+    return { kind: "admin", role: "admin" };
   } catch {
-    return { kind: "admin" };
+    return { kind: "admin", role: "admin" };
   }
 }
 
-/** The server's user directory: names and ids only, never token material. */
+/** The server's user directory: names, ids and roles only, never token material. */
 export async function listUsers(url: string, token: string): Promise<DirectoryUser[]> {
   const res = await request(url, token, "/v1/users");
   const body: unknown = await res.json();
   if (!Array.isArray(body)) return [];
-  return body.filter(
-    (user): user is DirectoryUser =>
-      !!user && typeof user === "object" && typeof (user as DirectoryUser).id === "string" && typeof (user as DirectoryUser).name === "string",
-  );
+  return body
+    .filter(
+      (user): user is DirectoryUser =>
+        !!user && typeof user === "object" && typeof (user as DirectoryUser).id === "string" && typeof (user as DirectoryUser).name === "string",
+    )
+    .map((user) => ({
+      id: user.id,
+      name: user.name,
+      role: (user as { role?: unknown }).role === "admin" ? ("admin" as const) : ("user" as const),
+      disabled: (user as { disabled?: unknown }).disabled === true,
+    }));
 }
 
 /** Admin only. The returned personal token is shown once and never stored by the server in raw form. */
-export async function createUser(url: string, token: string, name: string): Promise<{ id: string; name: string; token: string }> {
+export async function createUser(
+  url: string,
+  token: string,
+  name: string,
+  role: "admin" | "user" = "user",
+): Promise<{ id: string; name: string; token: string; role: "admin" | "user" }> {
   const res = await request(url, token, "/v1/users", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, role }),
   });
-  const body = (await res.json()) as { id?: unknown; name?: unknown; token?: unknown };
+  const body = (await res.json()) as { id?: unknown; name?: unknown; token?: unknown; role?: unknown };
   if (typeof body.id !== "string" || typeof body.name !== "string" || typeof body.token !== "string") {
     throw new Error("Server did not return a user token.");
   }
-  return { id: body.id, name: body.name, token: body.token };
+  return { id: body.id, name: body.name, token: body.token, role: body.role === "admin" ? "admin" : "user" };
 }
 
-/** Admin only. Revokes the user's access and unshares everything shared with them. */
+/** Admin only. Rename a user, change their role, or disable / re-enable them. */
+export async function updateUser(
+  url: string,
+  token: string,
+  id: string,
+  updates: { name?: string; role?: "admin" | "user"; disabled?: boolean },
+): Promise<DirectoryUser> {
+  const res = await request(url, token, `/v1/users/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(updates),
+  });
+  const body = (await res.json()) as { id?: unknown; name?: unknown; role?: unknown; disabled?: unknown };
+  if (typeof body.id !== "string" || typeof body.name !== "string") {
+    throw new Error("Server did not return the updated user.");
+  }
+  return {
+    id: body.id,
+    name: body.name,
+    role: body.role === "admin" ? "admin" : "user",
+    disabled: body.disabled === true,
+  };
+}
+
+/**
+ * Admin only. Revokes the user's access, unshares everything shared with them,
+ * and moves their own toducks to the admin instead of orphaning them. The
+ * revision bumps, so a stale client cannot write the removed user back.
+ */
 export async function deleteUser(url: string, token: string, id: string): Promise<void> {
   await request(url, token, `/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

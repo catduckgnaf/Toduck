@@ -56,15 +56,38 @@ type stateFile struct {
 
 // userRecord is a registered user. Only the SHA-256 hash of the personal
 // token is stored, never the raw token.
+//
+// Role is "admin" or "user" (older records omit it and read as "user").
+// A disabled user's personal token authenticates nowhere: authenticate()
+// rejects it, so disabling revokes sync + REST access immediately.
 type userRecord struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	TokenHash string `json:"tokenHash"`
+	Role      string `json:"role"`
+	Disabled  bool   `json:"disabled"`
+}
+
+// normalizeUserRecord fills defaults for records written before a field
+// existed (role) and rejects values the server cannot honor.
+func normalizeUserRecord(user userRecord) (userRecord, error) {
+	if user.ID == "" || user.Name == "" || user.TokenHash == "" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	if user.Role == "" {
+		user.Role = "user"
+	}
+	if user.Role != "admin" && user.Role != "user" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	return user, nil
 }
 
 type publicUser struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Disabled bool   `json:"disabled"`
 }
 
 type server struct {
@@ -116,10 +139,12 @@ func normalizeState(raw []byte) (stateFile, error) {
 		if err := json.Unmarshal(rawUsers, &users); err != nil {
 			return stateFile{}, errors.New("State users must be an array of user records when present.")
 		}
-		for _, user := range users {
-			if user.ID == "" || user.Name == "" || user.TokenHash == "" {
-				return stateFile{}, errors.New("State users must be an array of user records when present.")
+		for i, user := range users {
+			normalized, err := normalizeUserRecord(user)
+			if err != nil {
+				return stateFile{}, err
 			}
+			users[i] = normalized
 		}
 		if users == nil {
 			users = []userRecord{}
@@ -231,6 +256,10 @@ func (s *server) authenticate(r *http.Request) (isAdmin bool, user *userRecord, 
 	for index := range users {
 		stored := users[index].TokenHash
 		if len(stored) == len(suppliedHash) && subtle.ConstantTimeCompare([]byte(stored), []byte(suppliedHash)) == 1 {
+			// A disabled user's token authenticates nowhere.
+			if users[index].Disabled {
+				return false, nil, false
+			}
 			return false, &users[index], true
 		}
 	}
@@ -284,6 +313,30 @@ func sanitizeSharedWith(ids []string, users []userRecord) []string {
 		out = append(out, id)
 	}
 	return out
+}
+
+// sanitizeTasksSharedWith drops references to users who no longer exist
+// from an admin PUT's tasks (#50): sharedWith entries naming a removed
+// user are dropped, and an ownerId naming a removed user is cleared so
+// the task falls back to the admin instead of being orphaned again.
+func sanitizeTasksSharedWith(tasks json.RawMessage, users []userRecord) json.RawMessage {
+	known := map[string]struct{}{}
+	for _, user := range users {
+		known[user.ID] = struct{}{}
+	}
+	raws := splitTasks(tasks)
+	out := make([]json.RawMessage, 0, len(raws))
+	for _, raw := range raws {
+		meta := parseTaskMeta(raw)
+		owner := meta.OwnerID
+		if owner != nil {
+			if _, ok := known[*owner]; !ok {
+				owner = nil
+			}
+		}
+		out = append(out, rewriteTask(raw, owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(out)
 }
 
 func splitTasks(raw json.RawMessage) []json.RawMessage {
@@ -379,9 +432,14 @@ func mergeUserTasks(storedRaw, incomingRaw json.RawMessage, users []userRecord, 
 		}
 		handled[meta.ID] = struct{}{}
 		isOwner := meta.OwnerID != nil && *meta.OwnerID == userID
-		// A shared user cannot delete the owner's task: a tombstone from
-		// them is ignored (the Web client deletes by tombstone).
-		if !isOwner && parseTaskMeta(inc).Deleted && !meta.Deleted {
+		// A shared user can never resurrect the owner's tombstoned task:
+		// a live copy from them is ignored and the tombstone stands
+		// (#51). The owner themself may still undelete their own task.
+		if !isOwner && meta.Deleted {
+			result = append(result, raw)
+		} else if !isOwner && parseTaskMeta(inc).Deleted && !meta.Deleted {
+			// A shared user cannot delete the owner's task: a tombstone from
+			// them is ignored (the Web client deletes by tombstone).
 			result = append(result, raw)
 		} else if isOwner && taskHasSharedWith(inc) {
 			result = append(result, rewriteTask(inc, meta.OwnerID, sanitizeSharedWith(parseTaskMeta(inc).SharedWith, users)))
@@ -405,6 +463,42 @@ func mergeUserTasks(storedRaw, incomingRaw json.RawMessage, users []userRecord, 
 		handled[meta.ID] = struct{}{}
 		owner := userID
 		result = append(result, rewriteTask(raw, &owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(result)
+}
+
+// mergeSharedItems merges a personal token's categories/projects into the
+// stored ones (#45): entries are shared, ownerless globals, so a non-admin
+// PUT may only ADD entries with ids the server has never seen. Stored
+// entries are kept exactly — renames, tombstones and omissions of existing
+// ids from a personal token are ignored, so one user can never rewrite or
+// wipe everyone's tags/projects. The admin token keeps whole-state
+// semantics and never goes through this merge.
+func mergeSharedItems(storedRaw, incomingRaw json.RawMessage) json.RawMessage {
+	stored := splitTasks(storedRaw)
+	incoming := splitTasks(incomingRaw)
+	seen := map[string]struct{}{}
+	for _, raw := range stored {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) == nil && obj.ID != "" {
+			seen[obj.ID] = struct{}{}
+		}
+	}
+	result := append([]json.RawMessage{}, stored...)
+	for _, raw := range incoming {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) != nil || obj.ID == "" {
+			continue
+		}
+		if _, dup := seen[obj.ID]; dup {
+			continue
+		}
+		seen[obj.ID] = struct{}{}
+		result = append(result, raw)
 	}
 	return joinTasks(result)
 }
@@ -705,7 +799,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/v1/state" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
 		s.stateEndpoint(w, r)
 	case (r.URL.Path == "/v1/users" || strings.HasPrefix(r.URL.Path, "/v1/users/") || r.URL.Path == "/v1/me") && r.Method == http.MethodOptions:
-		s.options(w, r, "Authorization, Content-Type", "GET, POST, DELETE, OPTIONS")
+		s.options(w, r, "Authorization, Content-Type", "GET, POST, PATCH, DELETE, OPTIONS")
 	case (r.URL.Path == "/v1/tasks" || strings.HasPrefix(r.URL.Path, "/v1/tasks/")) && r.Method == http.MethodOptions:
 		s.options(w, r, "Authorization, Content-Type", "GET, POST, PATCH, DELETE, OPTIONS")
 	case r.URL.Path == "/v1/tasks" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
@@ -716,7 +810,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.meEndpoint(w, r)
 	case r.URL.Path == "/v1/users" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
 		s.usersEndpoint(w, r)
-	case strings.HasPrefix(r.URL.Path, "/v1/users/") && r.Method == http.MethodDelete:
+	case strings.HasPrefix(r.URL.Path, "/v1/users/") && (r.Method == http.MethodDelete || r.Method == http.MethodPatch):
 		s.usersEndpoint(w, r)
 	case r.URL.Path == "/v1" || strings.HasPrefix(r.URL.Path, "/v1/"):
 		s.unknownAPI(w, r)
@@ -829,10 +923,10 @@ func (s *server) meEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if isAdmin {
-		writeJSON(w, http.StatusOK, map[string]string{"kind": "admin"})
+		writeJSON(w, http.StatusOK, map[string]string{"kind": "admin", "role": "admin"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"kind": "user", "id": user.ID, "name": user.Name})
+	writeJSON(w, http.StatusOK, map[string]any{"kind": "user", "id": user.ID, "name": user.Name, "role": user.Role, "disabled": user.Disabled})
 }
 
 func newUserID() string {
@@ -849,11 +943,14 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.cors(w, r)
-	isAdmin, _, ok := s.authenticate(r)
+	isAdmin, caller, ok := s.authenticate(r)
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 		return
 	}
+	// User management is open to the admin token and to personal tokens
+	// with the admin role; whole-state sync access stays admin-token-only.
+	isManager := isAdmin || (caller != nil && caller.Role == "admin")
 	switch {
 	case r.Method == http.MethodGet:
 		s.mu.Lock()
@@ -861,12 +958,12 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		directory := []publicUser{}
 		for _, user := range users {
-			directory = append(directory, publicUser{ID: user.ID, Name: user.Name})
+			directory = append(directory, publicUser{ID: user.ID, Name: user.Name, Role: user.Role, Disabled: user.Disabled})
 		}
 		writeJSON(w, http.StatusOK, directory)
 	case r.Method == http.MethodPost:
-		if !isAdmin {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only the admin can create users"})
+		if !isManager {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only an admin can create users"})
 			return
 		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody))
@@ -881,6 +978,7 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 		var payload struct {
 			Name string `json:"name"`
+			Role string `json:"role"`
 		}
 		if json.Unmarshal(body, &payload) != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
@@ -894,6 +992,14 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A user name is required"})
 			return
 		}
+		role := payload.Role
+		if role == "" {
+			role = "user"
+		}
+		if role != "admin" && role != "user" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role must be admin or user"})
+			return
+		}
 		// The raw personal token is returned once, here; only its SHA-256
 		// hash is ever stored.
 		tokenBytes := make([]byte, 32)
@@ -902,7 +1008,7 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		personalToken := base64.RawURLEncoding.EncodeToString(tokenBytes)
-		record := userRecord{ID: newUserID(), Name: name, TokenHash: hashToken(personalToken)}
+		record := userRecord{ID: newUserID(), Name: name, TokenHash: hashToken(personalToken), Role: role}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		next := s.state
@@ -912,10 +1018,86 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.state = next
-		writeJSON(w, http.StatusCreated, map[string]string{"id": record.ID, "name": record.Name, "token": personalToken})
+		writeJSON(w, http.StatusCreated, map[string]string{"id": record.ID, "name": record.Name, "token": personalToken, "role": record.Role})
+	case r.Method == http.MethodPatch:
+		if !isManager {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only an admin can change users"})
+			return
+		}
+		targetID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/users/"))
+		if err != nil || targetID == "" || strings.Contains(targetID, "/") {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found"})
+			return
+		}
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBody))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+			return
+		}
+		var payload map[string]json.RawMessage
+		if json.Unmarshal(body, &payload) != nil || payload == nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		index := -1
+		for i, user := range s.state.Users {
+			if user.ID == targetID {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found"})
+			return
+		}
+		updated := s.state.Users[index]
+		if raw, present := payload["name"]; present {
+			var name string
+			if json.Unmarshal(raw, &name) != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "name must be a string"})
+				return
+			}
+			name = strings.TrimSpace(name)
+			if len(name) > 80 {
+				name = string([]rune(name)[:80])
+			}
+			if name == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "A user name is required"})
+				return
+			}
+			updated.Name = name
+		}
+		if raw, present := payload["role"]; present {
+			var role string
+			if json.Unmarshal(raw, &role) != nil || (role != "admin" && role != "user") {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "role must be admin or user"})
+				return
+			}
+			updated.Role = role
+		}
+		if raw, present := payload["disabled"]; present {
+			var disabled bool
+			if json.Unmarshal(raw, &disabled) != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "disabled must be a boolean"})
+				return
+			}
+			updated.Disabled = disabled
+		}
+		next := s.state
+		users := append([]userRecord{}, s.state.Users...)
+		users[index] = updated
+		next.Users = users
+		if err := persistState(s.dataPath, next); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to persist state"})
+			return
+		}
+		s.state = next
+		writeJSON(w, http.StatusOK, publicUser{ID: updated.ID, Name: updated.Name, Role: updated.Role, Disabled: updated.Disabled})
 	case r.Method == http.MethodDelete:
-		if !isAdmin {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only the admin can delete users"})
+		if !isManager {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only an admin can delete users"})
 			return
 		}
 		targetID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/users/"))
@@ -939,6 +1121,10 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Revoking a user also unshares everything shared with them.
+		// Their own tasks are reassigned to the admin (ownerId null) so
+		// nothing is silently orphaned or lost (#50), and the revision
+		// bumps so a stale client cannot PUT with the old If-Match and
+		// write the removed id back into sharedWith.
 		tasks := []json.RawMessage{}
 		for _, raw := range splitTasks(s.state.Tasks) {
 			meta := parseTaskMeta(raw)
@@ -951,12 +1137,16 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 					kept = append(kept, id)
 				}
 			}
-			if contains {
+			owned := meta.OwnerID != nil && *meta.OwnerID == targetID
+			if owned {
+				raw = rewriteTask(raw, nil, kept)
+			} else if contains {
 				raw = rewriteTask(raw, meta.OwnerID, kept)
 			}
 			tasks = append(tasks, raw)
 		}
 		next := s.state
+		next.Revision = s.state.Revision + 1
 		next.Users = remaining
 		next.Tasks = joinTasks(tasks)
 		if err := persistState(s.dataPath, next); err != nil {
@@ -964,7 +1154,7 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.state = next
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": next.Revision})
 	}
 }
 
@@ -1211,17 +1401,30 @@ func (s *server) stateEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 	// A client that predates projects (e.g. the Android app) omits the
 	// array; keep the stored projects instead of wiping them.
-	projects := parsed.Projects
-	if !parsed.projectsPresent {
-		projects = s.state.Projects
-	}
 	// The admin token keeps whole-state semantics; a personal token's
-	// payload is merged in scoped to that user (see mergeUserTasks).
+	// payload is merged in scoped to that user (see mergeUserTasks), and
+	// its categories/projects are merged by id (#45) — never replaced.
 	tasks := parsed.Tasks
+	categories := parsed.Categories
+	projects := parsed.Projects
 	if !isAdmin {
 		tasks = mergeUserTasks(s.state.Tasks, parsed.Tasks, s.state.Users, user.ID)
+		categories = mergeSharedItems(s.state.Categories, parsed.Categories)
+		if parsed.projectsPresent {
+			projects = mergeSharedItems(s.state.Projects, parsed.Projects)
+		} else {
+			projects = s.state.Projects
+		}
+	} else {
+		// An admin PUT keeps whole-state semantics, but references to
+		// users who no longer exist are dropped (#50) instead of
+		// resurrecting them in sharedWith or as an owner.
+		tasks = sanitizeTasksSharedWith(parsed.Tasks, s.state.Users)
+		if !parsed.projectsPresent {
+			projects = s.state.Projects
+		}
 	}
-	next := stateFile{Revision: s.state.Revision + 1, Tasks: tasks, Categories: parsed.Categories, Projects: projects, Users: s.state.Users, projectsPresent: true}
+	next := stateFile{Revision: s.state.Revision + 1, Tasks: tasks, Categories: categories, Projects: projects, Users: s.state.Users, projectsPresent: true}
 	if err := persistState(s.dataPath, next); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to persist state"})
 		return

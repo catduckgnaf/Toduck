@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createUser, deleteUser, detectSameOriginServer, fetchMe, listUsers, normalizeServerUrl, mergeById, pullDoc, readDoc, syncDoc } from "./sync.ts";
+import { createUser, deleteUser, detectSameOriginServer, fetchMe, listUsers, normalizeServerUrl, mergeById, pullDoc, readDoc, syncDoc, updateUser } from "./sync.ts";
 
 test("normalizeServerUrl trims whitespace and handles trailing slashes", () => {
   assert.equal(normalizeServerUrl(""), "");
@@ -110,23 +110,37 @@ test("user directory helpers call the users endpoints with the caller token", as
     const url = String(input);
     const headers = new Headers(init.headers);
     calls.push({ url, method: init.method ?? "GET", authorization: headers.get("Authorization"), body: typeof init.body === "string" ? init.body : undefined });
-    if (url.endsWith("/v1/me")) return new Response(JSON.stringify({ kind: "user", id: "u1", name: "Alice" }), { status: 200 });
+    if (url.endsWith("/v1/me")) return new Response(JSON.stringify({ kind: "user", id: "u1", name: "Alice", role: "admin", disabled: false }), { status: 200 });
     if (url.endsWith("/v1/users") && (init.method ?? "GET") === "GET") {
-      return new Response(JSON.stringify([{ id: "u1", name: "Alice" }, { id: "u2", name: "Bob", tokenHash: "never-exposed" }]), { status: 200 });
+      return new Response(JSON.stringify([{ id: "u1", name: "Alice", role: "admin" }, { id: "u2", name: "Bob", tokenHash: "never-exposed" }]), { status: 200 });
     }
     if (url.endsWith("/v1/users") && init.method === "POST") {
-      return new Response(JSON.stringify({ id: "u3", name: "Carol", token: "carol-secret-token" }), { status: 201 });
+      return new Response(JSON.stringify({ id: "u3", name: "Carol", token: "carol-secret-token", role: "user" }), { status: 201 });
+    }
+    if (url.endsWith("/v1/users/u1") && init.method === "PATCH") {
+      return new Response(JSON.stringify({ id: "u1", name: "Alice", role: "admin", disabled: true }), { status: 200 });
     }
     if (url.endsWith("/v1/users/u3") && init.method === "DELETE") return new Response(JSON.stringify({ ok: true }), { status: 200 });
     return new Response("{}", { status: 404 });
   };
   try {
-    assert.deepEqual(await fetchMe("https://tasks.example.com", "alice-token"), { kind: "user", id: "u1", name: "Alice" });
+    assert.deepEqual(await fetchMe("https://tasks.example.com", "alice-token"), {
+      kind: "user",
+      id: "u1",
+      name: "Alice",
+      role: "admin",
+      disabled: false,
+    });
     const directory = await listUsers("https://tasks.example.com", "alice-token");
     assert.equal(directory.length, 2);
-    assert.equal(directory[0]?.name, "Alice");
+    assert.deepEqual(directory[0], { id: "u1", name: "Alice", role: "admin", disabled: false });
+    // A record without role/disabled (an older server) reads as an enabled user.
+    assert.deepEqual(directory[1], { id: "u2", name: "Bob", role: "user", disabled: false });
     const created = await createUser("https://tasks.example.com", "admin-token", "Carol");
     assert.equal(created.token, "carol-secret-token");
+    assert.equal(created.role, "user");
+    const updated = await updateUser("https://tasks.example.com", "admin-token", "u1", { disabled: true });
+    assert.deepEqual(updated, { id: "u1", name: "Alice", role: "admin", disabled: true });
     await deleteUser("https://tasks.example.com", "admin-token", "u3");
     assert.deepEqual(
       calls.map((call) => [call.method, call.url]),
@@ -134,11 +148,13 @@ test("user directory helpers call the users endpoints with the caller token", as
         ["GET", "https://tasks.example.com/v1/me"],
         ["GET", "https://tasks.example.com/v1/users"],
         ["POST", "https://tasks.example.com/v1/users"],
+        ["PATCH", "https://tasks.example.com/v1/users/u1"],
         ["DELETE", "https://tasks.example.com/v1/users/u3"],
       ],
     );
     assert.equal(calls[2]?.authorization, "Bearer admin-token");
-    assert.equal(calls[2]?.body, JSON.stringify({ name: "Carol" }));
+    assert.equal(calls[2]?.body, JSON.stringify({ name: "Carol", role: "user" }));
+    assert.equal(calls[3]?.body, JSON.stringify({ disabled: true }));
   } finally {
     globalThis.fetch = originalFetch;
   }
