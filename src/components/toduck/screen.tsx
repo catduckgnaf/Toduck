@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Menu, Settings, X } from "lucide-react";
 import { Detail } from "@/components/toduck/detail";
 import { CategoriesDialog, ProjectsDialog, SettingsDialog } from "@/components/toduck/settings";
@@ -31,6 +31,16 @@ import {
   type ViewId,
 } from "@/lib/toduck/model";
 import { bindSync, syncNow, useToduck } from "@/lib/toduck/store";
+import {
+  formatTimeLabel,
+  parseNaturalLanguage,
+  parsedNoteLines,
+  type Ambiguity,
+  type Priority,
+  type Suggestion,
+  type SuggestionApply,
+  type SuggestionOption,
+} from "@/lib/toduck/natural-language";
 
 const VIEWS: { id: ViewId; label: string }[] = [
   { id: "all", label: "All Tasks" },
@@ -802,8 +812,14 @@ function Composer({
   categoryFilter: string | null;
   projectFilter: string | null;
 }) {
-  const categories = activeCategories(useToduck((s) => s.categories));
-  const projects = activeProjects(useToduck((s) => s.projects));
+  // Memoize the active lists: activeCategories/activeProjects build a
+  // fresh array on every call, and the parse memo below must only
+  // recompute when the underlying store data changes - otherwise the
+  // sync effect below re-runs on every render.
+  const rawCategories = useToduck((s) => s.categories);
+  const rawProjects = useToduck((s) => s.projects);
+  const categories = useMemo(() => activeCategories(rawCategories), [rawCategories]);
+  const projects = useMemo(() => activeProjects(rawProjects), [rawProjects]);
   const addTask = useToduck((s) => s.addTask);
   const today = todayKey();
   const defaultDate = view === "upcoming" ? addDays(today, 1) : view === "day" ? focus : today;
@@ -817,12 +833,193 @@ function Composer({
   const [repeatKind, setRepeatKind] = useState<SimpleRepeatKind>(defaultRepeatKind);
   const [categoryId, setCategoryId] = useState<string | null>(categoryFilter);
   const [projectId, setProjectId] = useState<string | null>(projectFilter);
+  // Natural-language state: the parsed repeat when it is richer than
+  // the simple kinds the select offers, plus a time and a priority,
+  // which the task model has no fields for. The parsed date, project
+  // and tag sync straight into the composer's own controls below.
+  const [repeatOverride, setRepeatOverride] = useState<Repeat | null>(null);
+  const [nlTime, setNlTime] = useState<string | null>(null);
+  const [nlPriority, setNlPriority] = useState<Priority | null>(null);
+  const [ignoreParse, setIgnoreParse] = useState(false);
+  // Ambiguity spans the user resolved by picking a reading: the text
+  // was never consumed by the parser, so it is stripped from the
+  // saved title only once the user has said what it means.
+  const [resolvedSpans, setResolvedSpans] = useState<string[]>([]);
 
   useEffect(() => {
     setDate(defaultDate);
     setCategoryId(categoryFilter);
     setProjectId(projectFilter);
   }, [defaultDate, categoryFilter, projectFilter]);
+
+  // What the task name means right now. Typing re-parses on every
+  // keystroke; the preview below shows the result before anything is
+  // saved.
+  const parsed = useMemo(
+    () => parseNaturalLanguage(title, { now: new Date(), projects, categories }),
+    [title, projects, categories],
+  );
+  const hasParse =
+    parsed.date !== null ||
+    parsed.time !== null ||
+    parsed.repeat.kind !== "none" ||
+    parsed.projectId !== null ||
+    parsed.categoryId !== null ||
+    parsed.priority !== null ||
+    parsed.suggestions.length > 0 ||
+    parsed.ambiguities.length > 0;
+  // The cleaned title is what Add saves (unless parsing is ignored).
+  // Ambiguity spans the user resolved are stripped from it: the user
+  // has said what they mean, so the raw text no longer needs to stay.
+  const cleanTitle = ignoreParse
+    ? title.trim()
+    : resolvedSpans
+        .reduce((text, span) => text.replace(span, ""), parsed.title)
+        .replace(/\s+/g, " ")
+        .trim();
+
+  const applyRepeat = (repeat: Repeat): void => {
+    if (
+      repeat.kind === "none" ||
+      repeat.kind === "daily" ||
+      repeat.kind === "weekdays" ||
+      repeat.kind === "weekly" ||
+      repeat.kind === "monthly"
+    ) {
+      setRepeatKind(repeat.kind);
+      setRepeatOverride(null);
+    } else {
+      setRepeatOverride(repeat);
+    }
+  };
+
+  // Sync the parse into the composer's controls, one field at a time:
+  // a field is only written when the text changes what it means, so a
+  // manual edit (or a reverted suggestion) sticks until the text
+  // itself says something different. A parsed value of null means the
+  // text says nothing about that field, so the control is left alone.
+  const lastSyncedRef = useRef<{
+    date: string | null;
+    repeat: Repeat;
+    projectId: string | null;
+    categoryId: string | null;
+    time: string | null;
+    priority: Priority | null;
+  } | null>(null);
+  useEffect(() => {
+    setIgnoreParse(false);
+    // Only clear when something was resolved: a fresh array is never
+    // referentially equal, so an unconditional set would re-render
+    // on every parse change for nothing.
+    setResolvedSpans((prev) => (prev.length === 0 ? prev : []));
+    const prev = lastSyncedRef.current;
+    const sameRepeat = prev !== null && JSON.stringify(prev.repeat) === JSON.stringify(parsed.repeat);
+    if ((!prev || prev.date !== parsed.date) && parsed.date !== null) setDate(parsed.date);
+    if (!sameRepeat && parsed.repeat.kind !== "none") applyRepeat(parsed.repeat);
+    if ((!prev || prev.projectId !== parsed.projectId) && parsed.projectId !== null) {
+      setProjectId(parsed.projectId);
+    }
+    if ((!prev || prev.categoryId !== parsed.categoryId) && parsed.categoryId !== null) {
+      setCategoryId(parsed.categoryId);
+    }
+    if ((!prev || prev.time !== parsed.time) && parsed.time !== null) setNlTime(parsed.time);
+    if ((!prev || prev.priority !== parsed.priority) && parsed.priority !== null) {
+      setNlPriority(parsed.priority);
+    }
+    lastSyncedRef.current = {
+      date: parsed.date,
+      repeat: parsed.repeat,
+      projectId: parsed.projectId,
+      categoryId: parsed.categoryId,
+      time: parsed.time,
+      priority: parsed.priority,
+    };
+    // The parse is the only input: it changes exactly when the text does.
+  }, [parsed]);
+
+  const applyOption = (apply: SuggestionApply): void => {
+    switch (apply.field) {
+      case "date":
+        setDate(apply.date);
+        break;
+      case "time":
+        setNlTime(apply.time);
+        break;
+      case "repeat":
+        applyRepeat(apply.repeat);
+        break;
+      case "projectId":
+        setProjectId(apply.projectId);
+        break;
+      case "categoryId":
+        setCategoryId(apply.categoryId);
+        break;
+      case "priority":
+        setNlPriority(apply.priority);
+        break;
+    }
+  };
+
+  // Picking an ambiguity reading also resolves its raw text: it leaves
+  // the saved title, since the user has said what it means.
+  const applyAmbiguity = (ambiguity: Ambiguity, reading: SuggestionOption): void => {
+    applyOption(reading.apply);
+    setResolvedSpans((prev) => [...prev, ambiguity.text]);
+  };
+
+  // Undo a direct (single clear answer) suggestion: the field goes
+  // back to the composer's default, and the sync above does not
+  // re-apply it because the text still means the same thing.
+  const revertSuggestion = (suggestion: Suggestion): void => {
+    const apply = suggestion.apply;
+    if (!apply) return;
+    switch (apply.field) {
+      case "date":
+        setDate(defaultDate);
+        break;
+      case "time":
+        setNlTime(null);
+        break;
+      case "repeat":
+        setRepeatKind(defaultRepeatKind);
+        setRepeatOverride(null);
+        break;
+      case "projectId":
+        setProjectId(projectFilter);
+        break;
+      case "categoryId":
+        setCategoryId(categoryFilter);
+        break;
+      case "priority":
+        setNlPriority(null);
+        break;
+    }
+  };
+
+  // "Ignore text parsing" keeps the raw title and also puts every field
+  // the parse had set back to the composer's defaults, so nothing parsed
+  // from the text is saved.
+  const ignoreTextParsing = (): void => {
+    setIgnoreParse(true);
+    setResolvedSpans([]);
+    setDate(defaultDate);
+    setCategoryId(categoryFilter);
+    setProjectId(projectFilter);
+    setRepeatKind(defaultRepeatKind);
+    setRepeatOverride(null);
+    setNlTime(null);
+    setNlPriority(null);
+    // Forget what was last synced so the next keystroke re-applies every
+    // parsed field. The saved title strips the parsed words once parsing
+    // resumes, so without this their date, time, project and priority
+    // would be dropped along with the text.
+    lastSyncedRef.current = null;
+  };
+
+  const effectiveRepeat: Repeat = repeatOverride ?? { kind: repeatKind };
+  const noteLines = ignoreParse
+    ? []
+    : parsedNoteLines({ ...parsed, time: nlTime, priority: nlPriority });
 
   const labelClass = "mb-1 block text-xs font-medium text-muted";
 
@@ -831,15 +1028,22 @@ function Composer({
       className="safe-bottom shrink-0 border-t border-line bg-paper px-5 pt-3"
       onSubmit={(event) => {
         event.preventDefault();
-        if (!title.trim()) return;
-        const repeat: Repeat = repeatKind === "none" ? { kind: "none" } : { kind: repeatKind };
-        addTask({ title, notes, categoryId, projectId, date, repeat });
+        if (!cleanTitle) return;
+        const fullNotes =
+          noteLines.length > 0 ? [...noteLines, notes].filter(Boolean).join("\n") : notes;
+        addTask({ title: cleanTitle, notes: fullNotes, categoryId, projectId, date, repeat: effectiveRepeat });
         setTitle("");
         setNotes("");
         setDate(defaultDate);
         setCategoryId(categoryFilter);
         setProjectId(projectFilter);
         setRepeatKind(defaultRepeatKind);
+        setRepeatOverride(null);
+        setNlTime(null);
+        setNlPriority(null);
+        setIgnoreParse(false);
+        setResolvedSpans([]);
+        lastSyncedRef.current = null;
       }}
     >
       <div className="flex items-end gap-2">
@@ -856,10 +1060,100 @@ function Composer({
             aria-label="New toduck"
           />
         </div>
-        <Button type="submit" variant="primary" disabled={!title.trim()}>
+        <Button type="submit" variant="primary" disabled={!cleanTitle}>
           Add
         </Button>
       </div>
+      {hasParse && !ignoreParse && (
+        <div
+          className="mt-2 rounded-lg border border-line bg-card px-3 py-2"
+          role="region"
+          aria-label="Task preview"
+          aria-live="polite"
+        >
+          <p className="text-sm">
+            <span className="font-medium">Preview: </span>
+            {cleanTitle ? (
+              <span>{cleanTitle}</span>
+            ) : (
+              <span className="text-faint">Add a title — the name so far only sets a date.</span>
+            )}
+          </p>
+          <p className="mt-1 text-xs text-muted">
+            {formatWhen(date, today)}
+            {` · ${repeatLabel(effectiveRepeat)}`}
+            {projectName(projects, projectId) ? ` · ${projectName(projects, projectId)}` : ""}
+            {categoryName(categories, categoryId) ? ` · ${categoryName(categories, categoryId)}` : ""}
+            {nlTime ? ` · At ${formatTimeLabel(nlTime)}` : ""}
+            {nlPriority
+              ? ` · Priority: ${{ urgent: "Urgent", high: "High", medium: "Medium", low: "Low" }[nlPriority]}`
+              : ""}
+          </p>
+          {nlTime && (
+            <p className="mt-1 text-xs text-muted">
+              Time saves as a note line (“At {formatTimeLabel(nlTime)}”).{" "}
+              <button type="button" className="underline" onClick={() => setNlTime(null)}>
+                Remove time
+              </button>
+            </p>
+          )}
+          {nlPriority && (
+            <p className="mt-1 text-xs text-muted">
+              Priority saves as a note line.{" "}
+              <button type="button" className="underline" onClick={() => setNlPriority(null)}>
+                Remove priority
+              </button>
+            </p>
+          )}
+          {parsed.suggestions.map((suggestion, index) => (
+            <p key={`${suggestion.kind}-${index}`} className="mt-1 text-xs">
+              {suggestion.decision === "direct" ? (
+                <span>
+                  Suggested from “{suggestion.source}”: {suggestion.label}.{" "}
+                  <button type="button" className="underline" onClick={() => revertSuggestion(suggestion)}>
+                    Revert
+                  </button>
+                </span>
+              ) : (
+                <span>
+                  {suggestion.label}{" "}
+                  {suggestion.options?.map((option) => (
+                    <button
+                      key={option.label}
+                      type="button"
+                      className="mr-2 underline"
+                      onClick={() => applyOption(option.apply)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </span>
+              )}
+            </p>
+          ))}
+          {parsed.ambiguities.map((ambiguity) => (
+            <p key={ambiguity.text} className="mt-1 text-xs">
+              “{ambiguity.text}” could be:{" "}
+              {ambiguity.readings.map((reading) => (
+                <button
+                  key={reading.label}
+                  type="button"
+                  className="mr-2 underline"
+                  onClick={() => applyAmbiguity(ambiguity, reading)}
+                >
+                  {reading.label}
+                </button>
+              ))}
+            </p>
+          ))}
+          <p className="mt-1 text-xs text-faint">
+            The preview follows the task name; the fields below stay editable.{" "}
+            <button type="button" className="underline" onClick={ignoreTextParsing}>
+              Ignore text parsing
+            </button>
+          </p>
+        </div>
+      )}
       <div className="mt-2">
         <label className={labelClass} htmlFor="new-notes">
           Details
@@ -925,14 +1219,21 @@ function Composer({
           <select
             id="new-repeat"
             className="field"
-            value={repeatKind}
-            onChange={(event) => setRepeatKind(event.target.value as SimpleRepeatKind)}
+            value={repeatOverride ? "__parsed__" : repeatKind}
+            onChange={(event) => {
+              if (event.target.value === "__parsed__") return;
+              setRepeatKind(event.target.value as SimpleRepeatKind);
+              setRepeatOverride(null);
+            }}
           >
             <option value="none">Once</option>
             <option value="daily">Every day</option>
             <option value="weekdays">Weekdays</option>
             <option value="weekly">Every week</option>
             <option value="monthly">Every month</option>
+            {repeatOverride && (
+              <option value="__parsed__">{repeatLabel(repeatOverride)} (from text)</option>
+            )}
           </select>
         </div>
         <div>
@@ -954,7 +1255,11 @@ function Composer({
           </select>
         </div>
       </div>
-      <p className="pb-1 text-xs text-faint">Custom repeats and new tags live in a toduck's details and the Tags dialog.</p>
+      <p className="pb-1 text-xs text-faint">
+        Custom repeats and new tags live in a toduck&apos;s details and the Tags dialog. Type a date or
+        repeat in the task name — “tomorrow”, “every Monday”, “at 3pm” — and check the preview before
+        adding.
+      </p>
     </form>
   );
 }

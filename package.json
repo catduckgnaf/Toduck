@@ -14,7 +14,7 @@
     "preview:restart": "node scripts/preview.mjs restart",
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
-    "test": "node --test 'scripts/**/*.test.mjs' selfhost/*.test.mjs && node --experimental-strip-types --test src/lib/toduck/sync.test.ts src/lib/toduck/store.test.ts src/lib/toduck/model.test.ts src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts",
+    "test": "node --test 'scripts/**/*.test.mjs' selfhost/*.test.mjs && node --experimental-strip-types --test src/lib/toduck/sync.test.ts src/lib/toduck/store.test.ts src/lib/toduck/model.test.ts src/lib/toduck/fuzzy.test.ts src/lib/toduck/natural-language.test.ts src/lib/app-data/app-data.test.ts src/lib/app-data/readiness-schedule.test.ts",
     "test:e2e": "playwright test",
     "lint": "eslint .",
     "format": "prettier --write ."
