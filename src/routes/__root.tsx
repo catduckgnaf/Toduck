@@ -75,6 +75,21 @@ const BOOT_WATCHDOG_SCRIPT = `(function () {
   }, 500);
 })();`;
 
+/**
+ * Registers the offline service worker once the page has loaded. Every build
+ * ships a new worker with its own cache name; the browser installs it and the
+ * worker deletes older caches, so no reset step is needed. Saved tasks live in
+ * localStorage, which the worker never touches. The persistent storage request
+ * asks the browser not to evict that data under storage pressure.
+ */
+const SERVICE_WORKER_SCRIPT = `(function () {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("/sw.js").catch(function () {});
+    try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {}); } catch (e) { /* ignore */ }
+  });
+})();`;
+
 export const Route = createRootRoute({
   head: () => ({
     meta: [
@@ -108,26 +123,7 @@ export const Route = createRootRoute({
         <HeadContent />
       </head>
       <body>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `(function () {
-  if (!("serviceWorker" in navigator)) return;
-  var done = function () { location.reload(); };
-  if (navigator.serviceWorker.controller) {
-    var key = "toduck-sw-reset";
-    try { if (sessionStorage.getItem(key)) return; sessionStorage.setItem(key, "1"); } catch (e) { return; }
-    navigator.serviceWorker.getRegistrations().then(function (regs) {
-      return Promise.all(regs.map(function (reg) { return reg.unregister(); }));
-    }).then(function () {
-      if (!window.caches) return;
-      return caches.keys().then(function (keys) { return Promise.all(keys.map(function (k) { return caches.delete(k); })); });
-    }).then(done, done);
-    return;
-  }
-  window.addEventListener("load", function () { navigator.serviceWorker.register("/sw.js").catch(function () {}); });
-})();`,
-          }}
-        />
+        <script dangerouslySetInnerHTML={{ __html: SERVICE_WORKER_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: BOOT_WATCHDOG_SCRIPT }} />
         <PreviewHostBridge />
           <Outlet />
