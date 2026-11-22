@@ -38,3 +38,13 @@ test("the shipped worker only caches successful HTML navigations and falls back 
   assert.match(source, /res\.ok && !res\.redirected && isHtml\(res\)/);
   assert.match(source, /cache\.match\("\/"\)/);
 });
+
+test("activation keeps the current and previous Toduck caches and deletes the rest", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const stamped = stampWorker(source, ["/assets/a.js"], "fp");
+  const sandbox = { self: { addEventListener() {}, location: { origin: "http://x" } }, caches: {}, fetch() {}, URL, Request: class {}, Response: class {}, setTimeout, clearTimeout };
+  runInNewContext(stamped, sandbox);
+  const current = runInNewContext("CACHE", sandbox);
+  assert.deepEqual(runInNewContext("cachesToDelete", sandbox)(["toduck-old", "other", "toduck-prev", current]), ["toduck-old", "other"]);
+  assert.deepEqual(runInNewContext("cachesToDelete", sandbox)([current]), []);
+});

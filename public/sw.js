@@ -6,9 +6,13 @@
 // build, and PRECACHE_ASSETS lists every file under /assets/. In `npm run dev`
 // the stamps keep their defaults and only runtime caching applies.
 //
-// Activation deletes every cache whose name is not the current one, so a new
-// build never inherits an older shell or asset set. The worker never touches
-// localStorage, so saved tasks are unaffected by updates or cache resets.
+// Activation keeps the current cache plus the one build before it and deletes
+// the rest. The new worker takes over open tabs at once (skipWaiting), and a tab
+// still running the previous build may later lazy-load one of that build's
+// chunks; keeping the previous cache lets those requests succeed offline or
+// after the deployment removed the old files. Only build assets fall back to
+// older caches; the app shell always comes from the current one. The worker
+// never touches localStorage, so saved tasks are unaffected by updates.
 const BUILD_ID = "dev"; // @stamp build
 const PRECACHE_ASSETS = []; // @stamp assets
 
@@ -39,11 +43,20 @@ self.addEventListener("install", (event) => {
   event.waitUntil(precache().then(() => self.skipWaiting()));
 });
 
+// caches.keys() lists caches in creation order, so the last older Toduck cache
+// belongs to the build this worker replaces.
+function cachesToDelete(keys) {
+  const older = keys.filter((k) => k !== CACHE);
+  const ours = older.filter((k) => k.startsWith("toduck-"));
+  const previous = ours[ours.length - 1];
+  return older.filter((k) => k !== previous);
+}
+
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(cachesToDelete(keys).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -85,6 +98,9 @@ async function hashedAsset(req) {
   const cache = await caches.open(CACHE);
   const hit = await cache.match(req);
   if (hit) return hit;
+  // A tab still on the previous build asks for that build's chunks.
+  const older = await caches.match(req);
+  if (older) return older;
   const res = await fetch(req);
   if (res.ok && !isHtml(res)) remember(cache, req, res.clone());
   return res;
