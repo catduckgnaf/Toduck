@@ -523,7 +523,7 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
 
   const mutateUsers = mutateState;
 
-  return createServer(async (req, res) => {
+  const handleRequest = async (req, res) => {
     const url = new URL(req.url || "/", "http://localhost");
 
     if ((url.pathname === "/v1/users" || url.pathname.startsWith("/v1/users/") || url.pathname === "/v1/me") && req.method === "OPTIONS") {
@@ -971,7 +971,7 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
         return;
       }
 
-      if (!Array.isArray(parsed.tasks) || !Array.isArray(parsed.categories)) {
+      if (!parsed || !Array.isArray(parsed.tasks) || !Array.isArray(parsed.categories)) {
         send(res, 400, JSON.stringify({ error: "Expected tasks and categories arrays" }), undefined, headers);
         return;
       }
@@ -1046,6 +1046,21 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
 
     if ((req.method === "GET" || req.method === "HEAD") && serveStatic(req, res, url.pathname)) return;
     send(res, 404, JSON.stringify({ error: "Not found" }));
+  };
+
+  // Async request handlers must not leave rejected promises unobserved:
+  // malformed URLs are client errors, unexpected failures get a safe 500.
+  return createServer((req, res) => {
+    void handleRequest(req, res).catch((error) => {
+      if (res.headersSent || res.writableEnded) {
+        res.destroy();
+        return;
+      }
+      const malformed = error instanceof URIError || error?.code === "ERR_INVALID_URL";
+      send(res, malformed ? 400 : 500, JSON.stringify({
+        error: malformed ? "Invalid request" : "Internal server error",
+      }));
+    });
   });
 }
 
