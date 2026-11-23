@@ -1302,3 +1302,51 @@ func TestCrossOriginAndPreflightNeverGrantAccess(t *testing.T) {
 		t.Fatalf("foreign origin on unknown path status %d, want 403", res.StatusCode)
 	}
 }
+
+func TestKnownAPIRoutesRejectUnsupportedMethods(t *testing.T) {
+	server, dir := newTestServer(t)
+	defer server.Close()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>shell</html>"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, route, allow string
+	}{
+		{http.MethodHead, "/health", "GET, OPTIONS"},
+		{http.MethodHead, "/v1/state", "GET, PUT, OPTIONS"},
+		{http.MethodHead, "/v1/tasks", "GET, POST, OPTIONS"},
+		{http.MethodGet, "/v1/tasks/task123", "PATCH, DELETE, OPTIONS"},
+		{http.MethodPost, "/v1/users/user123", "PATCH, DELETE, OPTIONS"},
+		{http.MethodDelete, "/v1/me", "GET, OPTIONS"},
+	} {
+		req, err := http.NewRequest(tc.method, server.URL+tc.route, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		auth(req)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusMethodNotAllowed || res.Header.Get("Allow") != tc.allow {
+			t.Errorf("%s %s: got status %d Allow %q, want 405 %q", tc.method, tc.route, res.StatusCode, res.Header.Get("Allow"), tc.allow)
+		}
+		if strings.Contains(string(body), "<html>") {
+			t.Errorf("%s %s returned SPA shell", tc.method, tc.route)
+		}
+	}
+	for _, route := range []string{"/v1/missing", "/v1/tasks/a/extra", "/v1/users/a/extra"} {
+		res := doRest(t, http.MethodGet, server.URL+route, testToken, "")
+		if res.StatusCode != http.StatusNotFound || !strings.Contains(res.Header.Get("Content-Type"), "application/json") {
+			t.Errorf("%s returned %d %q", route, res.StatusCode, res.Header.Get("Content-Type"))
+		}
+		res.Body.Close()
+	}
+	unauthenticated := doRest(t, http.MethodGet, server.URL+"/v1/tasks/a", "", "")
+	defer unauthenticated.Body.Close()
+	if unauthenticated.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated unknown method returned %d", unauthenticated.StatusCode)
+	}
+}
