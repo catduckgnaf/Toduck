@@ -432,6 +432,43 @@ test("composer natural language preview parses dates, times and typos before add
   await expect(page.getByText("NL ambiguous task", { exact: true })).toBeVisible();
 });
 
+test("accepting a fuzzy suggestion cleans the title, while ignoring it preserves the text", async ({ page }) => {
+  const input = page.getByLabel("New toduck");
+  const preview = page.getByRole("region", { name: "Task preview" });
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = [
+    tomorrowDate.getFullYear(),
+    String(tomorrowDate.getMonth() + 1).padStart(2, "0"),
+    String(tomorrowDate.getDate()).padStart(2, "0"),
+  ].join("-");
+
+  // The grey-zone typo remains literal until an explicit choice.
+  await input.fill("Pick up lunch tmrow");
+  await expect(preview.getByText("Pick up lunch tmrow", { exact: true })).toBeVisible();
+  await preview.getByRole("button", { name: "Tomorrow", exact: true }).click();
+  await expect(preview.getByText("Pick up lunch", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+
+  const accepted = page.getByRole("listitem").filter({ hasText: "Pick up lunch" });
+  await expect(accepted).toBeVisible();
+  await expect(accepted.getByLabel("Change date for Pick up lunch")).toHaveValue(tomorrow);
+  await expect(page.getByText("Pick up lunch tmrow", { exact: true })).toHaveCount(0);
+
+  // Without a selection the same typo is still part of the task title.
+  await input.fill("Pick up dinner tmrow");
+  await expect(preview.getByText("Pick up dinner tmrow", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: "Pick up dinner tmrow" })).toBeVisible();
+
+  // Editing the text after accepting a suggestion resets the resolved span.
+  await input.fill("Call back tmrow");
+  await preview.getByRole("button", { name: "Tomorrow", exact: true }).click();
+  await expect(preview.getByText("Call back", { exact: true })).toBeVisible();
+  await input.fill("Call back tmrow again");
+  await expect(preview.getByText("Call back tmrow again", { exact: true })).toBeVisible();
+});
+
 test("ignoring text parsing saves the raw title with default fields", async ({ page }) => {
   const key = (date: Date) => {
     const y = date.getFullYear();
