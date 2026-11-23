@@ -1,7 +1,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { DayPicker } from "react-day-picker";
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 import {
   DAY_SHORT,
@@ -235,6 +235,43 @@ const REPEAT_PRESETS: { label: string; repeat: Repeat }[] = [
   { label: "Chosen days", repeat: { kind: "days", days: [1, 3, 5] } },
 ];
 
+/** Keep in-progress interval text separate from the normalized repeat rule. */
+function IntervalEveryInput({
+  every,
+  unit,
+  onChange,
+}: {
+  every: number;
+  unit: "day" | "week" | "month";
+  onChange: (repeat: Repeat) => void;
+}) {
+  const [draft, setDraft] = useState(String(every));
+
+  // A different preset or an external edit can update the actual repeat.
+  useEffect(() => setDraft(String(every)), [every]);
+
+  const commit = () => {
+    const entered = Number.parseInt(draft, 10);
+    const normalized = Math.min(99, Math.max(1, Number.isFinite(entered) ? entered : 1));
+    setDraft(String(normalized));
+    if (normalized !== every) onChange({ kind: "interval", every: normalized, unit });
+  };
+
+  return (
+    <input
+      id="repeat-every"
+      className="field w-20"
+      inputMode="numeric"
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 export function RepeatChooser({
   repeat,
   date,
@@ -261,19 +298,7 @@ export function RepeatChooser({
           <label className="sr-only" htmlFor="repeat-every">
             Interval
           </label>
-          <input
-            id="repeat-every"
-            className="field w-20"
-            inputMode="numeric"
-            value={rule.every}
-            onChange={(event) =>
-              onChange({
-                kind: "interval",
-                every: Number(event.target.value),
-                unit: rule.unit,
-              })
-            }
-          />
+          <IntervalEveryInput every={rule.every} unit={rule.unit} onChange={onChange} />
           <label className="sr-only" htmlFor="repeat-unit">
             Interval unit
           </label>
