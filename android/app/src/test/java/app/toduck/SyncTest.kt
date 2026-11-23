@@ -5,6 +5,9 @@ import java.io.InputStreamReader
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.Calendar
+import java.util.Locale
+import java.util.TimeZone
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -83,6 +86,23 @@ class SyncTest {
 
         fun putRevisions(): List<String> = synchronized(lock) { puts.toList() }
         override fun close() { socket.close(); thread.join(1000) }
+    }
+
+    @Test fun dateKeysUseAsciiDigitsRegardlessOfDeviceLocale() {
+        val prior = Locale.getDefault()
+        val date = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.US).apply {
+            set(2026, Calendar.NOVEMBER, 23, 12, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        try {
+            for (languageTag in listOf("ar-EG", "fa-IR")) {
+                Locale.setDefault(Locale.forLanguageTag(languageTag))
+                assertEquals("2026-11-23", toKey(date))
+                assertEquals("2026-11-24", addDays("2026-11-23", 1))
+            }
+        } finally {
+            Locale.setDefault(prior)
+        }
     }
 
     @Test fun revisionAwareSyncUsesServerRevisionAndMerges() {
