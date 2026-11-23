@@ -124,10 +124,16 @@ export function isInstallQuery(url) {
   return (install === "1" || install === "true") && platform === "ios";
 }
 
+/** An app link must remain on the current origin, even when parsed by a browser. */
+function isSafeAppPath(path) {
+  return path.startsWith("/") && !path.startsWith("//") && !/\\|%5c/i.test(path);
+}
+
 /** Paths that can carry an app document (vs assets / API / internals). */
 export function isDocumentPath(pathname) {
   const path = String(pathname ?? "");
   return (
+    isSafeAppPath(path) &&
     !path.startsWith("/__grok/") &&
     !path.startsWith("/api/") &&
     !path.startsWith("/@") &&
@@ -144,6 +150,8 @@ export function acceptsHtml(accept) {
 /** The same URL without the install-tutorial params (used as the app link). */
 export function stripInstallParams(url) {
   const [path = "/", query = ""] = String(url ?? "/").split("?", 2);
+  // Fail closed even if a caller forgot to screen the incoming document URL.
+  if (!isSafeAppPath(path)) return "/";
   const params = new URLSearchParams(query);
   params.delete("install");
   params.delete("platform");
