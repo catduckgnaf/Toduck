@@ -117,12 +117,14 @@ export function baselineComparison(current, rawText) {
   }
   return compareToBaseline(current, baseline);
 }
-export function exitCodeFor(viewports) {
+/** Exit 3 for baseline drift; navigation (1) and browser errors (2) take precedence. */
+export function exitCodeFor(viewports, divergesFromBaseline = false) {
   const list = Object.values(viewports ?? {});
   if (list.length === 0) return 1;
   if (list.some((v) => (v.status ?? 0) >= 400 || (v.status ?? 0) === 0)) return 1;
   if (list.some((v) => (v.consoleErrors?.length ?? 0) > 0 || (v.pageErrors?.length ?? 0) > 0)) {
     return 2;
   }
+  if (divergesFromBaseline) return 3;
   return 0;
 }

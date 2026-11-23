@@ -354,6 +354,22 @@ test("exitCodeFor: errors in any single viewport exit 2", () => {
   assert.equal(exitCodeFor(verdict({ pageErrors: ["boom"] }).viewports), 2);
 });
 
+test("exitCodeFor: baseline divergence fails, but only when a baseline is supplied", () => {
+  const current = verdict();
+  const unchanged = baselineComparison(current, JSON.stringify(verdict()));
+  const changed = baselineComparison(current, JSON.stringify(verdict({ title: "Old title" })));
+  const invalid = baselineComparison(current, "not JSON");
+  assert.equal(exitCodeFor(current.viewports), 0);
+  assert.equal(exitCodeFor(current.viewports, unchanged.divergesFromBaseline), 0);
+  assert.equal(exitCodeFor(current.viewports, changed.divergesFromBaseline), 3);
+  assert.equal(exitCodeFor(current.viewports, invalid.divergesFromBaseline), 3);
+});
+
+test("exitCodeFor: navigation and browser errors take precedence over baseline drift", () => {
+  assert.equal(exitCodeFor(verdict({ status: 404 }).viewports, true), 1);
+  assert.equal(exitCodeFor(verdict({}, { consoleErrors: ["broken"] }).viewports, true), 2);
+});
+
 test("exitCodeFor: navigation failure in any viewport exits 1, beating errors", () => {
   assert.equal(exitCodeFor(verdict({}, { status: 500 }).viewports), 1);
   assert.equal(exitCodeFor(verdict({ status: 0 }).viewports), 1);
@@ -385,7 +401,7 @@ test("browser-smoke wires the guard and verdict helpers", () => {
   assert.match(src, /normalizedBodyTextHash\(/);
   assert.match(src, /bodyTextPrefix\(/);
   assert.match(src, /baselineComparison\(/);
-  assert.match(src, /process\.exitCode = exitCodeFor\(viewports\)/);
+  assert.match(src, /process\.exitCode = exitCodeFor\(viewports, verdict\.divergesFromBaseline === true\)/);
   assert.match(src, /waitUntil: "domcontentloaded"/);
   assert.doesNotMatch(
     src,

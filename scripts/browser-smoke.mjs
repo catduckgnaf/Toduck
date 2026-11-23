@@ -162,7 +162,7 @@ try {
   // Set the code rather than aborting the process so the `finally` browser
   // teardown always runs (agents typically smoke twice per turn; leaking
   // Chromium accumulates across retries).
-  process.exitCode = exitCodeFor(viewports);
+  process.exitCode = exitCodeFor(viewports, verdict.divergesFromBaseline === true);
 } catch (err) {
   const failure = { ok: false, url, error: String(err?.message || err) };
   try {
