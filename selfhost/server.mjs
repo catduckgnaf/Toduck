@@ -486,7 +486,9 @@ export function createToduckServer({ token, dataPath = "/data/state.json", stati
   function serveStatic(req, res, pathname) {
     const filePath = resolveStaticPath(staticDir, pathname === "/" ? "/index.html" : pathname);
     if (filePath && existsSync(filePath) && statSync(filePath).isFile()) {
-      const isAsset = pathname.startsWith("/assets/") || pathname.startsWith("/__grok/");
+      // Only /assets/ files have content-hashed names. /__grok/ uses fixed
+      // filenames, so its CSS and icons must be revalidated after updates.
+      const isAsset = pathname.startsWith("/assets/");
       // The SPA shell carries a marker so the Web UI can tell a Toduck
       // server from any other host serving the same files (#106): the
       // client probes the shell, which always exists, instead of an

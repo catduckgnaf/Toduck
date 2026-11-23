@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -162,6 +162,33 @@ test("security headers are returned for web responses", async () => {
     const head = await fetch(`${url}/`, { method: "HEAD" });
     assert.equal(head.status, 200);
     assert.equal(head.headers.get("x-toduck-server"), "1");
+  });
+});
+
+test("fixed-name Grok files revalidate while hashed assets stay immutable (#59)", async () => {
+  await withServer(async ({ url, dir }) => {
+    await mkdir(join(dir, "__grok", "install"), { recursive: true });
+    await mkdir(join(dir, "assets"), { recursive: true });
+    const files = [
+      ["/__grok/install/styles.css", "body { color: red; }", "no-cache"],
+      ["/__grok/icon-180.png", "fake-png", "no-cache"],
+      ["/assets/app.abc123.js", "console.log('ok');", "public, max-age=31536000, immutable"],
+      ["/", "<html>shell</html>", "no-cache"],
+    ];
+    for (const [pathname, body] of files) {
+      const fileName = pathname === "/" ? "index.html" : pathname.slice(1);
+      await writeFile(join(dir, fileName), body);
+    }
+    for (const [pathname, body, cache] of files) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await fetch(`${url}${pathname}`, { method });
+        assert.equal(response.status, 200, `${method} ${pathname}`);
+        assert.equal(response.headers.get("cache-control"), cache, `${method} ${pathname}`);
+        assert.equal(await response.text(), method === "HEAD" ? "" : body);
+      }
+    }
+    // Missing static assets must not be rewritten to the SPA shell.
+    assert.equal((await fetch(`${url}/__grok/missing.css`)).status, 404);
   });
 });
 
