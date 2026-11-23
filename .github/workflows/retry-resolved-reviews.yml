@@ -1,0 +1,72 @@
+name: Retry contribution checks after review resolution
+
+on:
+  schedule:
+    # GitHub Actions has no event for resolving a review thread.
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: write
+
+jobs:
+  retry-resolved:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { selectReviewRetryCandidates } = await import(
+              'file://' + process.env.GITHUB_WORKSPACE + '/scripts/contribution-retry.mjs'
+            );
+            const { data: runPage } = await github.rest.actions.listWorkflowRuns({
+              ...context.repo,
+              workflow_id: 'contribution.yml',
+              event: 'pull_request',
+              per_page: 100,
+            });
+            const prs = await github.paginate(github.rest.pulls.list, {
+              ...context.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const candidates = selectReviewRetryCandidates(runPage.workflow_runs, prs);
+            for (const { pr, run } of candidates) {
+              let cursor = null;
+              let unresolved = 0;
+              do {
+                const query = 'query($owner:String!, $name:String!, $number:Int!, $cursor:String) {' +
+                  ' repository(owner:$owner, name:$name) {' +
+                  ' pullRequest(number:$number) {' +
+                  ' reviewThreads(first:100, after:$cursor) {' +
+                  ' pageInfo { hasNextPage endCursor }' +
+                  ' nodes { isResolved comments(first:20) { nodes { author { login } } } }' +
+                  ' } } } }';
+                const result = await github.graphql(query, {
+                  owner: context.repo.owner,
+                  name: context.repo.repo,
+                  number: pr.number,
+                  cursor,
+                });
+                const page = result.repository.pullRequest.reviewThreads;
+                for (const thread of page.nodes) {
+                  if (!thread.isResolved && thread.comments.nodes.some(
+                    (comment) => /codex/i.test(comment.author?.login || '')
+                  )) unresolved++;
+                }
+                cursor = page.pageInfo.hasNextPage ? page.pageInfo.endCursor : null;
+              } while (cursor);
+              if (unresolved) {
+                core.info('PR #' + pr.number + ': ' + unresolved + ' Codex threads still open.');
+                continue;
+              }
+              core.info('PR #' + pr.number + ': resolved threads; retrying run ' + run.id);
+              await github.rest.actions.reRunWorkflowFailedJobs({
+                ...context.repo,
+                run_id: run.id,
+              });
+            }
