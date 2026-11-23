@@ -83,4 +83,4 @@ jobs:
           }
           JS
       - name: Policy tests
-        run: node --test scripts/contribution-policy.test.mjs scripts/us-spelling.test.mjs
+        run: node --test scripts/contribution-policy.test.mjs scripts/us-spelling.test.mjs scripts/contribution-retry.test.mjs
