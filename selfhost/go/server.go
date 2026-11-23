@@ -794,6 +794,9 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.options(w, r, "Authorization", "GET, OPTIONS")
 	case r.URL.Path == "/health" && r.Method == http.MethodGet:
 		s.health(w, r)
+	case r.URL.Path == "/health":
+		w.Header().Set("Allow", "GET, OPTIONS")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 	case r.URL.Path == "/v1/state" && r.Method == http.MethodOptions:
 		s.options(w, r, "Authorization, Content-Type, If-Match", "GET, PUT, OPTIONS")
 	case r.URL.Path == "/v1/state" && (r.Method == http.MethodGet || r.Method == http.MethodPut):
@@ -858,6 +861,17 @@ func isSameOrigin(origin string, r *http.Request) bool {
 	return strings.EqualFold(host.Hostname(), u.Hostname()) && hostPort == originPort
 }
 
+// isSingleAPIItemPath checks the escaped path, so a percent-encoded slash
+// inside an ID is not mistaken for an extra route segment.
+func isSingleAPIItemPath(r *http.Request, prefix string) bool {
+	escaped := r.URL.EscapedPath()
+	if !strings.HasPrefix(escaped, prefix) {
+		return false
+	}
+	id := strings.TrimPrefix(escaped, prefix)
+	return id != "" && !strings.Contains(id, "/")
+}
+
 // unknownAPI answers any /v1 request no route claimed. The API namespace
 // never falls through to the static Web UI shell: a caller without a valid
 // bearer token gets 401 exactly as on a real route, so the response does not
@@ -870,6 +884,26 @@ func (s *server) unknownAPI(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	if _, _, ok := s.authenticate(r); !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+		return
+	}
+	allowed := ""
+	switch {
+	case r.URL.Path == "/v1/state":
+		allowed = "GET, PUT, OPTIONS"
+	case r.URL.Path == "/v1/me":
+		allowed = "GET, OPTIONS"
+	case r.URL.Path == "/v1/users":
+		allowed = "GET, POST, OPTIONS"
+	case isSingleAPIItemPath(r, "/v1/users/"):
+		allowed = "PATCH, DELETE, OPTIONS"
+	case r.URL.Path == "/v1/tasks":
+		allowed = "GET, POST, OPTIONS"
+	case isSingleAPIItemPath(r, "/v1/tasks/"):
+		allowed = "PATCH, DELETE, OPTIONS"
+	}
+	if allowed != "" {
+		w.Header().Set("Allow", allowed)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "Method not allowed"})
 		return
 	}
 	writeJSON(w, http.StatusNotFound, map[string]string{"error": "Not found"})
