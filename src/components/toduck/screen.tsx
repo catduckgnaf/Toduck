@@ -960,6 +960,13 @@ function Composer({
     }
   };
 
+  // A fuzzy pick-list only sets the field once the user picks a reading.
+  // Resolve the original typo at the same time so it leaves the saved title.
+  const applySuggestionOption = (suggestion: Suggestion, option: SuggestionOption): void => {
+    applyOption(option.apply);
+    setResolvedSpans((prev) => [...prev, suggestion.source]);
+  };
+
   // Picking an ambiguity reading also resolves its raw text: it leaves
   // the saved title, since the user has said what it means.
   const applyAmbiguity = (ambiguity: Ambiguity, reading: SuggestionOption): void => {
@@ -1122,7 +1129,7 @@ function Composer({
                       key={option.label}
                       type="button"
                       className="mr-2 underline"
-                      onClick={() => applyOption(option.apply)}
+                      onClick={() => applySuggestionOption(suggestion, option)}
                     >
                       {option.label}
                     </button>
