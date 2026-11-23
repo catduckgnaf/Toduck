@@ -1302,3 +1302,41 @@ func TestCrossOriginAndPreflightNeverGrantAccess(t *testing.T) {
 		t.Fatalf("foreign origin on unknown path status %d, want 403", res.StatusCode)
 	}
 }
+
+func TestRestItemIDDecodesExactlyOnce(t *testing.T) {
+	cases := []struct { path, want string; valid bool }{
+		{"/v1/tasks/a%2Fb", "a/b", true},
+		{"/v1/tasks/50%25", "50%", true},
+		{"/v1/tasks/a%252Fb", "a%2Fb", true},
+		{"/v1/users/50%25", "50%", true},
+		{"/v1/tasks/a/b", "", false},
+		{"/v1/tasks/", "", false},
+	}
+	for _, tc := range cases {
+		r := httptest.NewRequest(http.MethodPatch, tc.path, nil)
+		prefix := "/v1/tasks/"
+		if strings.HasPrefix(tc.path, "/v1/users/") { prefix = "/v1/users/" }
+		id, ok := restItemID(r, prefix)
+		if id != tc.want || ok != tc.valid { t.Errorf("%s: got %q, %v, want %q, %v", tc.path, id, ok, tc.want, tc.valid) }
+	}
+}
+
+func TestRestTaskIDPercentEncoding(t *testing.T) {
+	server, _ := newTestServer(t)
+	defer server.Close()
+	ids := []string{"a/b", "50%", "a%2Fb"}
+	var tasks []string
+	for _, id := range ids { tasks = append(tasks, taskJSON(id, id, "", nil)) }
+	res := putStateGo(t, server.URL, testToken, 0, `{"tasks":[`+strings.Join(tasks, ",")+`],"categories":[],"projects":[]}`)
+	res.Body.Close()
+	if res.StatusCode != 200 { t.Fatalf("seed status %d", res.StatusCode) }
+	for _, tc := range []struct { id, encoded string }{{"a/b","a%2Fb"},{"50%","50%25"},{"a%2Fb","a%252Fb"}} {
+		patch := doRest(t, http.MethodPatch, server.URL+"/v1/tasks/"+tc.encoded, testToken, `{"done":true}`)
+		body, _ := io.ReadAll(patch.Body)
+		patch.Body.Close()
+		if patch.StatusCode != 200 || !strings.Contains(string(body), `"id":"`+tc.id+`"`) { t.Errorf("%q status %d body %s",tc.id,patch.StatusCode,body) }
+	}
+	missing := doRest(t, http.MethodPatch, server.URL+"/v1/tasks/a/b", testToken, `{"done":true}`)
+	defer missing.Body.Close()
+	if missing.StatusCode != 404 { t.Errorf("literal slash status %d",missing.StatusCode) }
+}
