@@ -937,6 +937,20 @@ func newUserID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16])
 }
 
+// Decode only the escaped ID segment: net/http already decodes URL.Path.
+func restItemID(r *http.Request, prefix string) (string, bool) {
+	escaped := r.URL.EscapedPath()
+	if !strings.HasPrefix(escaped, prefix) {
+		return "", false
+	}
+	segment := strings.TrimPrefix(escaped, prefix)
+	if segment == "" || strings.Contains(segment, "/") {
+		return "", false
+	}
+	id, err := url.PathUnescape(segment)
+	return id, err == nil && id != ""
+}
+
 func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 	if !s.originAllowed(r) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "Origin not allowed"})
@@ -1024,8 +1038,8 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only an admin can change users"})
 			return
 		}
-		targetID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/users/"))
-		if err != nil || targetID == "" || strings.Contains(targetID, "/") {
+		targetID, idOK := restItemID(r, "/v1/users/")
+		if !idOK {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found"})
 			return
 		}
@@ -1100,8 +1114,8 @@ func (s *server) usersEndpoint(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "Only an admin can delete users"})
 			return
 		}
-		targetID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/users/"))
-		if err != nil || targetID == "" || strings.Contains(targetID, "/") {
+		targetID, idOK := restItemID(r, "/v1/users/")
+		if !idOK {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found"})
 			return
 		}
@@ -1250,8 +1264,8 @@ func (s *server) tasksEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Item endpoints: PATCH / DELETE /v1/tasks/:id
-	targetID, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/v1/tasks/"))
-	if err != nil || targetID == "" || strings.Contains(targetID, "/") {
+	targetID, idOK := restItemID(r, "/v1/tasks/")
+	if !idOK {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Task not found"})
 		return
 	}
