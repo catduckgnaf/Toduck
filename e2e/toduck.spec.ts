@@ -245,6 +245,41 @@ test("row controls: one-click date picker, category picker, and repeat checkbox 
   await expect(page.getByText("Recurring quick task", { exact: true })).toHaveCount(0);
 });
 
+test("repeat interval can be cleared while typing, then normalizes on blur", async ({ page }) => {
+  await page.getByLabel("New toduck").fill("Interval editing task");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Interval editing task" });
+  await row.getByRole("button", { name: "Change repeat for Interval editing task" }).click();
+
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Every few…" }).click();
+  const interval = dialog.getByLabel("Interval", { exact: true });
+  await expect(interval).toHaveValue("2");
+
+  // Backspace must not immediately replace the empty draft with "1".
+  await interval.fill("");
+  await expect(interval).toHaveValue("");
+  await interval.fill("5");
+  await expect(interval).toHaveValue("5");
+  await interval.press("Tab");
+  await expect(interval).toHaveValue("5");
+
+  // The updated interval must survive closing and reopening the picker.
+  await dialog.getByRole("button", { name: "Done", exact: true }).click();
+  await row.getByRole("button", { name: "Change repeat for Interval editing task" }).click();
+  await expect(dialog.getByLabel("Interval", { exact: true })).toHaveValue("5");
+
+  // Invalid or out-of-range text is only normalized when editing ends.
+  await interval.fill("150");
+  await expect(interval).toHaveValue("150");
+  await interval.press("Tab");
+  await expect(interval).toHaveValue("99");
+  await interval.fill("");
+  await expect(interval).toHaveValue("");
+  await interval.press("Tab");
+  await expect(interval).toHaveValue("1");
+});
+
 test("row date sits next to the task title, not at the far right", async ({ page }) => {
   await page.getByLabel("New toduck").fill("Close date task");
   await page.getByRole("button", { name: "Add", exact: true }).click();
