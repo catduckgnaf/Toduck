@@ -452,7 +452,7 @@ test("accepting a fuzzy suggestion cleans the title, while ignoring it preserves
 
   const accepted = page.getByRole("listitem").filter({ hasText: "Pick up lunch" });
   await expect(accepted).toBeVisible();
-  await expect(accepted.getByLabel("Change date for Pick up lunch")).toHaveValue(tomorrow);
+  await expect(accepted.getByLabel(/^Change date for Pick up lunch, currently /)).toHaveValue(tomorrow);
   await expect(page.getByText("Pick up lunch tmrow", { exact: true })).toHaveCount(0);
 
   // Without a selection the same typo is still part of the task title.
