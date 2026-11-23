@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -505,7 +506,1024 @@ func mergeSharedItems(storedRaw, incomingRaw json.RawMessage) json.RawMessage {
 
 // --- REST task API helpers (mirror server.mjs) ---
 
-var dateKeyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+var dateKeyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const defaultMaxBody = 1_500_000
+
+// 'unsafe-inline' in script-src is required: the built Web UI's index.html
+// carries first-party inline bootstrap scripts (TanStack Start hydration).
+// Without it the served app renders blank. Keep in sync with server.mjs.
+var securityHeaders = map[string]string{
+	"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' https://grok.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://grok.com",
+	"Referrer-Policy":         "no-referrer",
+	"X-Content-Type-Options":  "nosniff",
+}
+
+type config struct {
+	token          string
+	dataPath       string
+	staticDir      string
+	maxBody        int64
+	allowedOrigins []string
+}
+
+type stateFile struct {
+	Revision   int64           `json:"revision"`
+	Tasks      json.RawMessage `json:"tasks"`
+	Categories json.RawMessage `json:"categories"`
+	Projects   json.RawMessage `json:"projects"`
+	Users      []userRecord    `json:"users"`
+	// projectsPresent records whether the source payload carried a projects
+	// array at all; older clients omit it and must not wipe stored projects.
+	projectsPresent bool
+}
+
+// userRecord is a registered user. Only the SHA-256 hash of the personal
+// token is stored, never the raw token.
+//
+// Role is "admin" or "user" (older records omit it and read as "user").
+// A disabled user's personal token authenticates nowhere: authenticate()
+// rejects it, so disabling revokes sync + REST access immediately.
+type userRecord struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TokenHash string `json:"tokenHash"`
+	Role      string `json:"role"`
+	Disabled  bool   `json:"disabled"`
+}
+
+// normalizeUserRecord fills defaults for records written before a field
+// existed (role) and rejects values the server cannot honor.
+func normalizeUserRecord(user userRecord) (userRecord, error) {
+	if user.ID == "" || user.Name == "" || user.TokenHash == "" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	if user.Role == "" {
+		user.Role = "user"
+	}
+	if user.Role != "admin" && user.Role != "user" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	return user, nil
+}
+
+type publicUser struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Disabled bool   `json:"disabled"`
+}
+
+type server struct {
+	config
+	origins map[string]struct{}
+	mu      sync.Mutex
+	state   stateFile
+}
+
+func validateToken(raw string) (string, error) {
+	if raw == "" || raw == "change-me" {
+		return "", errors.New("TODUCK_TOKEN must be explicitly configured.")
+	}
+	if len(raw) < 32 {
+		return "", errors.New("TODUCK_TOKEN must be at least 32 characters long.")
+	}
+	return raw, nil
+}
+
+func emptyState() stateFile {
+	return stateFile{Tasks: json.RawMessage("[]"), Categories: json.RawMessage("[]"), Projects: json.RawMessage("[]"), Users: []userRecord{}, projectsPresent: true}
+}
+
+func normalizeState(raw []byte) (stateFile, error) {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return stateFile{}, err
+	}
+	tasks, tasksOK := value["tasks"]
+	categories, categoriesOK := value["categories"]
+	if !tasksOK || !categoriesOK || !jsonArray(tasks) || !jsonArray(categories) {
+		return stateFile{}, errors.New("State must include tasks and categories arrays.")
+	}
+	// Projects are optional: state files and clients from before projects
+	// existed have no projects array, which reads as an empty one.
+	projects, projectsPresent := value["projects"]
+	if projectsPresent && !jsonArray(projects) {
+		return stateFile{}, errors.New("State projects must be an array when present.")
+	}
+	if !projectsPresent {
+		projects = json.RawMessage("[]")
+	}
+	// Users are optional for the same reason: older state files have none.
+	users := []userRecord{}
+	if rawUsers, ok := value["users"]; ok {
+		if !jsonArray(rawUsers) {
+			return stateFile{}, errors.New("State users must be an array of user records when present.")
+		}
+		if err := json.Unmarshal(rawUsers, &users); err != nil {
+			return stateFile{}, errors.New("State users must be an array of user records when present.")
+		}
+		for i, user := range users {
+			normalized, err := normalizeUserRecord(user)
+			if err != nil {
+				return stateFile{}, err
+			}
+			users[i] = normalized
+		}
+		if users == nil {
+			users = []userRecord{}
+		}
+	}
+	var revision int64
+	if rawRevision, ok := value["revision"]; ok {
+		_ = json.Unmarshal(rawRevision, &revision)
+		if revision < 0 {
+			revision = 0
+		}
+	}
+	return stateFile{
+		Revision:        revision,
+		Tasks:           append(json.RawMessage(nil), tasks...),
+		Categories:      append(json.RawMessage(nil), categories...),
+		Projects:        append(json.RawMessage(nil), projects...),
+		Users:           users,
+		projectsPresent: projectsPresent,
+	}, nil
+}
+
+func jsonArray(raw json.RawMessage) bool {
+	return len(raw) > 0 && raw[0] == '['
+}
+
+func loadState(dataPath string) (stateFile, error) {
+	raw, err := os.ReadFile(dataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return emptyState(), nil
+	}
+	state, primaryErr := normalizeState(raw)
+	if primaryErr == nil {
+		return state, nil
+	}
+	backup, backupErr := os.ReadFile(dataPath + ".bak")
+	if backupErr == nil {
+		if recovered, err := normalizeState(backup); err == nil {
+			_ = os.WriteFile(dataPath, backup, 0o644)
+			log.Printf("Recovered invalid primary state from %s.bak: %v", dataPath, primaryErr)
+			return recovered, nil
+		}
+	}
+	return stateFile{}, fmt.Errorf("State file is invalid and no usable backup exists: %w", primaryErr)
+}
+
+func persistState(dataPath string, state stateFile) error {
+	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	tmp := dataPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dataPath); err == nil {
+		if err := copyFile(dataPath, dataPath+".bak"); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmp, dataPath); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dataPath + ".bak"); errors.Is(err, os.ErrNotExist) {
+		return copyFile(dataPath, dataPath+".bak")
+	}
+	return nil
+}
+
+func copyFile(from, to string) error {
+	input, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, input, 0o644)
+}
+
+func tokenMatches(expected, authorization string) bool {
+	supplied := regexp.MustCompile(`(?i)^Bearer\s+`).ReplaceAllString(authorization, "")
+	expectedDigest := sha256.Sum256([]byte(expected))
+	suppliedDigest := sha256.Sum256([]byte(supplied))
+	return subtle.ConstantTimeCompare(expectedDigest[:], suppliedDigest[:]) == 1
+}
+
+func hashToken(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(digest[:])
+}
+
+func bearerToken(authorization string) string {
+	return regexp.MustCompile(`(?i)^Bearer\s+`).ReplaceAllString(authorization, "")
+}
+
+// authenticate resolves a request's credential: the TODUCK_TOKEN is the
+// admin (full, legacy access); a registered user's personal token scopes
+// state access to that user. Mirrors server.mjs.
+func (s *server) authenticate(r *http.Request) (isAdmin bool, user *userRecord, ok bool) {
+	authorization := r.Header.Get("Authorization")
+	if tokenMatches(s.token, authorization) {
+		return true, nil, true
+	}
+	suppliedHash := hashToken(bearerToken(authorization))
+	s.mu.Lock()
+	users := s.state.Users
+	s.mu.Unlock()
+	for index := range users {
+		stored := users[index].TokenHash
+		if len(stored) == len(suppliedHash) && subtle.ConstantTimeCompare([]byte(stored), []byte(suppliedHash)) == 1 {
+			// A disabled user's token authenticates nowhere.
+			if users[index].Disabled {
+				return false, nil, false
+			}
+			return false, &users[index], true
+		}
+	}
+	return false, nil, false
+}
+
+type taskMeta struct {
+	ID         string   `json:"id"`
+	OwnerID    *string  `json:"ownerId"`
+	SharedWith []string `json:"sharedWith"`
+	Deleted    bool     `json:"deleted"`
+}
+
+func parseTaskMeta(raw json.RawMessage) taskMeta {
+	var meta taskMeta
+	_ = json.Unmarshal(raw, &meta)
+	if meta.SharedWith == nil {
+		meta.SharedWith = []string{}
+	}
+	return meta
+}
+
+func visibleToUser(meta taskMeta, userID string) bool {
+	if meta.OwnerID != nil && *meta.OwnerID == userID {
+		return true
+	}
+	for _, id := range meta.SharedWith {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeSharedWith keeps only ids of registered users, de-duplicated.
+func sanitizeSharedWith(ids []string, users []userRecord) []string {
+	known := map[string]struct{}{}
+	for _, user := range users {
+		known[user.ID] = struct{}{}
+	}
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if _, ok := known[id]; !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// sanitizeTasksSharedWith drops references to users who no longer exist
+// from an admin PUT's tasks (#50): sharedWith entries naming a removed
+// user are dropped, and an ownerId naming a removed user is cleared so
+// the task falls back to the admin instead of being orphaned again.
+func sanitizeTasksSharedWith(tasks json.RawMessage, users []userRecord) json.RawMessage {
+	known := map[string]struct{}{}
+	for _, user := range users {
+		known[user.ID] = struct{}{}
+	}
+	raws := splitTasks(tasks)
+	out := make([]json.RawMessage, 0, len(raws))
+	for _, raw := range raws {
+		meta := parseTaskMeta(raw)
+		owner := meta.OwnerID
+		if owner != nil {
+			if _, ok := known[*owner]; !ok {
+				owner = nil
+			}
+		}
+		out = append(out, rewriteTask(raw, owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(out)
+}
+
+func splitTasks(raw json.RawMessage) []json.RawMessage {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return []json.RawMessage{}
+	}
+	return items
+}
+
+func joinTasks(items []json.RawMessage) json.RawMessage {
+	if len(items) == 0 {
+		return json.RawMessage("[]")
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	return raw
+}
+
+// rewriteTask returns the task object with ownerId/sharedWith replaced.
+func rewriteTask(raw json.RawMessage, ownerID *string, sharedWith []string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return raw
+	}
+	if ownerID == nil {
+		obj["ownerId"] = json.RawMessage("null")
+	} else {
+		encoded, _ := json.Marshal(*ownerID)
+		obj["ownerId"] = encoded
+	}
+	if sharedWith == nil {
+		sharedWith = []string{}
+	}
+	encoded, _ := json.Marshal(sharedWith)
+	obj["sharedWith"] = encoded
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func taskHasSharedWith(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	_, ok := obj["sharedWith"]
+	return ok
+}
+
+// mergeUserTasks merges a user token's PUT payload into the stored tasks,
+// mirroring mergeUserState in server.mjs: tasks the requester cannot see
+// are preserved exactly; their own omitted tasks are deleted; shared
+// omitted tasks are untouched; ownerId can never be forged or moved;
+// sharedWith changes only on tasks the requester owns.
+func mergeUserTasks(storedRaw, incomingRaw json.RawMessage, users []userRecord, userID string) json.RawMessage {
+	stored := splitTasks(storedRaw)
+	incoming := splitTasks(incomingRaw)
+	incomingByID := map[string]json.RawMessage{}
+	for _, raw := range incoming {
+		meta := parseTaskMeta(raw)
+		if meta.ID != "" {
+			if _, dup := incomingByID[meta.ID]; !dup {
+				incomingByID[meta.ID] = raw
+			}
+		}
+	}
+	storedIDs := map[string]struct{}{}
+	for _, raw := range stored {
+		storedIDs[parseTaskMeta(raw).ID] = struct{}{}
+	}
+	handled := map[string]struct{}{}
+	result := []json.RawMessage{}
+	for _, raw := range stored {
+		meta := parseTaskMeta(raw)
+		inc, hasIncoming := incomingByID[meta.ID]
+		if !visibleToUser(meta, userID) {
+			if hasIncoming {
+				handled[meta.ID] = struct{}{}
+			}
+			result = append(result, raw)
+			continue
+		}
+		if !hasIncoming {
+			if meta.OwnerID == nil || *meta.OwnerID != userID {
+				result = append(result, raw)
+			}
+			continue
+		}
+		handled[meta.ID] = struct{}{}
+		isOwner := meta.OwnerID != nil && *meta.OwnerID == userID
+		// A shared user can never resurrect the owner's tombstoned task:
+		// a live copy from them is ignored and the tombstone stands
+		// (#51). The owner themself may still undelete their own task.
+		if !isOwner && meta.Deleted {
+			result = append(result, raw)
+		} else if !isOwner && parseTaskMeta(inc).Deleted && !meta.Deleted {
+			// A shared user cannot delete the owner's task: a tombstone from
+			// them is ignored (the Web client deletes by tombstone).
+			result = append(result, raw)
+		} else if isOwner && taskHasSharedWith(inc) {
+			result = append(result, rewriteTask(inc, meta.OwnerID, sanitizeSharedWith(parseTaskMeta(inc).SharedWith, users)))
+		} else if isOwner {
+			result = append(result, rewriteTask(inc, meta.OwnerID, meta.SharedWith))
+		} else {
+			result = append(result, rewriteTask(inc, meta.OwnerID, meta.SharedWith))
+		}
+	}
+	for _, raw := range incoming {
+		meta := parseTaskMeta(raw)
+		if meta.ID == "" {
+			continue
+		}
+		if _, done := handled[meta.ID]; done {
+			continue
+		}
+		if _, exists := storedIDs[meta.ID]; exists {
+			continue
+		}
+		handled[meta.ID] = struct{}{}
+		owner := userID
+		result = append(result, rewriteTask(raw, &owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(result)
+}
+
+// mergeSharedItems merges a personal token's categories/projects into the
+// stored ones (#45): entries are shared, ownerless globals, so a non-admin
+// PUT may only ADD entries with ids the server has never seen. Stored
+// entries are kept exactly — renames, tombstones and omissions of existing
+// ids from a personal token are ignored, so one user can never rewrite or
+// wipe everyone's tags/projects. The admin token keeps whole-state
+// semantics and never goes through this merge.
+func mergeSharedItems(storedRaw, incomingRaw json.RawMessage) json.RawMessage {
+	stored := splitTasks(storedRaw)
+	incoming := splitTasks(incomingRaw)
+	seen := map[string]struct{}{}
+	for _, raw := range stored {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) == nil && obj.ID != "" {
+			seen[obj.ID] = struct{}{}
+		}
+	}
+	result := append([]json.RawMessage{}, stored...)
+	for _, raw := range incoming {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) != nil || obj.ID == "" {
+			continue
+		}
+		if _, dup := seen[obj.ID]; dup {
+			continue
+		}
+		seen[obj.ID] = struct{}{}
+		result = append(result, raw)
+	}
+	return joinTasks(result)
+}
+
+// --- REST task API helpers (mirror server.mjs) ---
+
+)
+var staticAssetSuffixPattern = regexp.MustCompile(`(?i)\.[a-z0-9]+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"math"
+	"mime"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+)
+
+const defaultMaxBody = 1_500_000
+
+// 'unsafe-inline' in script-src is required: the built Web UI's index.html
+// carries first-party inline bootstrap scripts (TanStack Start hydration).
+// Without it the served app renders blank. Keep in sync with server.mjs.
+var securityHeaders = map[string]string{
+	"Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' https://grok.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self' https://grok.com",
+	"Referrer-Policy":         "no-referrer",
+	"X-Content-Type-Options":  "nosniff",
+}
+
+type config struct {
+	token          string
+	dataPath       string
+	staticDir      string
+	maxBody        int64
+	allowedOrigins []string
+}
+
+type stateFile struct {
+	Revision   int64           `json:"revision"`
+	Tasks      json.RawMessage `json:"tasks"`
+	Categories json.RawMessage `json:"categories"`
+	Projects   json.RawMessage `json:"projects"`
+	Users      []userRecord    `json:"users"`
+	// projectsPresent records whether the source payload carried a projects
+	// array at all; older clients omit it and must not wipe stored projects.
+	projectsPresent bool
+}
+
+// userRecord is a registered user. Only the SHA-256 hash of the personal
+// token is stored, never the raw token.
+//
+// Role is "admin" or "user" (older records omit it and read as "user").
+// A disabled user's personal token authenticates nowhere: authenticate()
+// rejects it, so disabling revokes sync + REST access immediately.
+type userRecord struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	TokenHash string `json:"tokenHash"`
+	Role      string `json:"role"`
+	Disabled  bool   `json:"disabled"`
+}
+
+// normalizeUserRecord fills defaults for records written before a field
+// existed (role) and rejects values the server cannot honor.
+func normalizeUserRecord(user userRecord) (userRecord, error) {
+	if user.ID == "" || user.Name == "" || user.TokenHash == "" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	if user.Role == "" {
+		user.Role = "user"
+	}
+	if user.Role != "admin" && user.Role != "user" {
+		return userRecord{}, errors.New("State users must be an array of user records when present.")
+	}
+	return user, nil
+}
+
+type publicUser struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Role     string `json:"role"`
+	Disabled bool   `json:"disabled"`
+}
+
+type server struct {
+	config
+	origins map[string]struct{}
+	mu      sync.Mutex
+	state   stateFile
+}
+
+func validateToken(raw string) (string, error) {
+	if raw == "" || raw == "change-me" {
+		return "", errors.New("TODUCK_TOKEN must be explicitly configured.")
+	}
+	if len(raw) < 32 {
+		return "", errors.New("TODUCK_TOKEN must be at least 32 characters long.")
+	}
+	return raw, nil
+}
+
+func emptyState() stateFile {
+	return stateFile{Tasks: json.RawMessage("[]"), Categories: json.RawMessage("[]"), Projects: json.RawMessage("[]"), Users: []userRecord{}, projectsPresent: true}
+}
+
+func normalizeState(raw []byte) (stateFile, error) {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return stateFile{}, err
+	}
+	tasks, tasksOK := value["tasks"]
+	categories, categoriesOK := value["categories"]
+	if !tasksOK || !categoriesOK || !jsonArray(tasks) || !jsonArray(categories) {
+		return stateFile{}, errors.New("State must include tasks and categories arrays.")
+	}
+	// Projects are optional: state files and clients from before projects
+	// existed have no projects array, which reads as an empty one.
+	projects, projectsPresent := value["projects"]
+	if projectsPresent && !jsonArray(projects) {
+		return stateFile{}, errors.New("State projects must be an array when present.")
+	}
+	if !projectsPresent {
+		projects = json.RawMessage("[]")
+	}
+	// Users are optional for the same reason: older state files have none.
+	users := []userRecord{}
+	if rawUsers, ok := value["users"]; ok {
+		if !jsonArray(rawUsers) {
+			return stateFile{}, errors.New("State users must be an array of user records when present.")
+		}
+		if err := json.Unmarshal(rawUsers, &users); err != nil {
+			return stateFile{}, errors.New("State users must be an array of user records when present.")
+		}
+		for i, user := range users {
+			normalized, err := normalizeUserRecord(user)
+			if err != nil {
+				return stateFile{}, err
+			}
+			users[i] = normalized
+		}
+		if users == nil {
+			users = []userRecord{}
+		}
+	}
+	var revision int64
+	if rawRevision, ok := value["revision"]; ok {
+		_ = json.Unmarshal(rawRevision, &revision)
+		if revision < 0 {
+			revision = 0
+		}
+	}
+	return stateFile{
+		Revision:        revision,
+		Tasks:           append(json.RawMessage(nil), tasks...),
+		Categories:      append(json.RawMessage(nil), categories...),
+		Projects:        append(json.RawMessage(nil), projects...),
+		Users:           users,
+		projectsPresent: projectsPresent,
+	}, nil
+}
+
+func jsonArray(raw json.RawMessage) bool {
+	return len(raw) > 0 && raw[0] == '['
+}
+
+func loadState(dataPath string) (stateFile, error) {
+	raw, err := os.ReadFile(dataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return emptyState(), nil
+	}
+	state, primaryErr := normalizeState(raw)
+	if primaryErr == nil {
+		return state, nil
+	}
+	backup, backupErr := os.ReadFile(dataPath + ".bak")
+	if backupErr == nil {
+		if recovered, err := normalizeState(backup); err == nil {
+			_ = os.WriteFile(dataPath, backup, 0o644)
+			log.Printf("Recovered invalid primary state from %s.bak: %v", dataPath, primaryErr)
+			return recovered, nil
+		}
+	}
+	return stateFile{}, fmt.Errorf("State file is invalid and no usable backup exists: %w", primaryErr)
+}
+
+func persistState(dataPath string, state stateFile) error {
+	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	tmp := dataPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dataPath); err == nil {
+		if err := copyFile(dataPath, dataPath+".bak"); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(tmp, dataPath); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dataPath + ".bak"); errors.Is(err, os.ErrNotExist) {
+		return copyFile(dataPath, dataPath+".bak")
+	}
+	return nil
+}
+
+func copyFile(from, to string) error {
+	input, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(to, input, 0o644)
+}
+
+func tokenMatches(expected, authorization string) bool {
+	supplied := regexp.MustCompile(`(?i)^Bearer\s+`).ReplaceAllString(authorization, "")
+	expectedDigest := sha256.Sum256([]byte(expected))
+	suppliedDigest := sha256.Sum256([]byte(supplied))
+	return subtle.ConstantTimeCompare(expectedDigest[:], suppliedDigest[:]) == 1
+}
+
+func hashToken(token string) string {
+	digest := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(digest[:])
+}
+
+func bearerToken(authorization string) string {
+	return regexp.MustCompile(`(?i)^Bearer\s+`).ReplaceAllString(authorization, "")
+}
+
+// authenticate resolves a request's credential: the TODUCK_TOKEN is the
+// admin (full, legacy access); a registered user's personal token scopes
+// state access to that user. Mirrors server.mjs.
+func (s *server) authenticate(r *http.Request) (isAdmin bool, user *userRecord, ok bool) {
+	authorization := r.Header.Get("Authorization")
+	if tokenMatches(s.token, authorization) {
+		return true, nil, true
+	}
+	suppliedHash := hashToken(bearerToken(authorization))
+	s.mu.Lock()
+	users := s.state.Users
+	s.mu.Unlock()
+	for index := range users {
+		stored := users[index].TokenHash
+		if len(stored) == len(suppliedHash) && subtle.ConstantTimeCompare([]byte(stored), []byte(suppliedHash)) == 1 {
+			// A disabled user's token authenticates nowhere.
+			if users[index].Disabled {
+				return false, nil, false
+			}
+			return false, &users[index], true
+		}
+	}
+	return false, nil, false
+}
+
+type taskMeta struct {
+	ID         string   `json:"id"`
+	OwnerID    *string  `json:"ownerId"`
+	SharedWith []string `json:"sharedWith"`
+	Deleted    bool     `json:"deleted"`
+}
+
+func parseTaskMeta(raw json.RawMessage) taskMeta {
+	var meta taskMeta
+	_ = json.Unmarshal(raw, &meta)
+	if meta.SharedWith == nil {
+		meta.SharedWith = []string{}
+	}
+	return meta
+}
+
+func visibleToUser(meta taskMeta, userID string) bool {
+	if meta.OwnerID != nil && *meta.OwnerID == userID {
+		return true
+	}
+	for _, id := range meta.SharedWith {
+		if id == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// sanitizeSharedWith keeps only ids of registered users, de-duplicated.
+func sanitizeSharedWith(ids []string, users []userRecord) []string {
+	known := map[string]struct{}{}
+	for _, user := range users {
+		known[user.ID] = struct{}{}
+	}
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		if _, ok := known[id]; !ok {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out
+}
+
+// sanitizeTasksSharedWith drops references to users who no longer exist
+// from an admin PUT's tasks (#50): sharedWith entries naming a removed
+// user are dropped, and an ownerId naming a removed user is cleared so
+// the task falls back to the admin instead of being orphaned again.
+func sanitizeTasksSharedWith(tasks json.RawMessage, users []userRecord) json.RawMessage {
+	known := map[string]struct{}{}
+	for _, user := range users {
+		known[user.ID] = struct{}{}
+	}
+	raws := splitTasks(tasks)
+	out := make([]json.RawMessage, 0, len(raws))
+	for _, raw := range raws {
+		meta := parseTaskMeta(raw)
+		owner := meta.OwnerID
+		if owner != nil {
+			if _, ok := known[*owner]; !ok {
+				owner = nil
+			}
+		}
+		out = append(out, rewriteTask(raw, owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(out)
+}
+
+func splitTasks(raw json.RawMessage) []json.RawMessage {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return []json.RawMessage{}
+	}
+	return items
+}
+
+func joinTasks(items []json.RawMessage) json.RawMessage {
+	if len(items) == 0 {
+		return json.RawMessage("[]")
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return json.RawMessage("[]")
+	}
+	return raw
+}
+
+// rewriteTask returns the task object with ownerId/sharedWith replaced.
+func rewriteTask(raw json.RawMessage, ownerID *string, sharedWith []string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil || obj == nil {
+		return raw
+	}
+	if ownerID == nil {
+		obj["ownerId"] = json.RawMessage("null")
+	} else {
+		encoded, _ := json.Marshal(*ownerID)
+		obj["ownerId"] = encoded
+	}
+	if sharedWith == nil {
+		sharedWith = []string{}
+	}
+	encoded, _ := json.Marshal(sharedWith)
+	obj["sharedWith"] = encoded
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+func taskHasSharedWith(raw json.RawMessage) bool {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return false
+	}
+	_, ok := obj["sharedWith"]
+	return ok
+}
+
+// mergeUserTasks merges a user token's PUT payload into the stored tasks,
+// mirroring mergeUserState in server.mjs: tasks the requester cannot see
+// are preserved exactly; their own omitted tasks are deleted; shared
+// omitted tasks are untouched; ownerId can never be forged or moved;
+// sharedWith changes only on tasks the requester owns.
+func mergeUserTasks(storedRaw, incomingRaw json.RawMessage, users []userRecord, userID string) json.RawMessage {
+	stored := splitTasks(storedRaw)
+	incoming := splitTasks(incomingRaw)
+	incomingByID := map[string]json.RawMessage{}
+	for _, raw := range incoming {
+		meta := parseTaskMeta(raw)
+		if meta.ID != "" {
+			if _, dup := incomingByID[meta.ID]; !dup {
+				incomingByID[meta.ID] = raw
+			}
+		}
+	}
+	storedIDs := map[string]struct{}{}
+	for _, raw := range stored {
+		storedIDs[parseTaskMeta(raw).ID] = struct{}{}
+	}
+	handled := map[string]struct{}{}
+	result := []json.RawMessage{}
+	for _, raw := range stored {
+		meta := parseTaskMeta(raw)
+		inc, hasIncoming := incomingByID[meta.ID]
+		if !visibleToUser(meta, userID) {
+			if hasIncoming {
+				handled[meta.ID] = struct{}{}
+			}
+			result = append(result, raw)
+			continue
+		}
+		if !hasIncoming {
+			if meta.OwnerID == nil || *meta.OwnerID != userID {
+				result = append(result, raw)
+			}
+			continue
+		}
+		handled[meta.ID] = struct{}{}
+		isOwner := meta.OwnerID != nil && *meta.OwnerID == userID
+		// A shared user can never resurrect the owner's tombstoned task:
+		// a live copy from them is ignored and the tombstone stands
+		// (#51). The owner themself may still undelete their own task.
+		if !isOwner && meta.Deleted {
+			result = append(result, raw)
+		} else if !isOwner && parseTaskMeta(inc).Deleted && !meta.Deleted {
+			// A shared user cannot delete the owner's task: a tombstone from
+			// them is ignored (the Web client deletes by tombstone).
+			result = append(result, raw)
+		} else if isOwner && taskHasSharedWith(inc) {
+			result = append(result, rewriteTask(inc, meta.OwnerID, sanitizeSharedWith(parseTaskMeta(inc).SharedWith, users)))
+		} else if isOwner {
+			result = append(result, rewriteTask(inc, meta.OwnerID, meta.SharedWith))
+		} else {
+			result = append(result, rewriteTask(inc, meta.OwnerID, meta.SharedWith))
+		}
+	}
+	for _, raw := range incoming {
+		meta := parseTaskMeta(raw)
+		if meta.ID == "" {
+			continue
+		}
+		if _, done := handled[meta.ID]; done {
+			continue
+		}
+		if _, exists := storedIDs[meta.ID]; exists {
+			continue
+		}
+		handled[meta.ID] = struct{}{}
+		owner := userID
+		result = append(result, rewriteTask(raw, &owner, sanitizeSharedWith(meta.SharedWith, users)))
+	}
+	return joinTasks(result)
+}
+
+// mergeSharedItems merges a personal token's categories/projects into the
+// stored ones (#45): entries are shared, ownerless globals, so a non-admin
+// PUT may only ADD entries with ids the server has never seen. Stored
+// entries are kept exactly — renames, tombstones and omissions of existing
+// ids from a personal token are ignored, so one user can never rewrite or
+// wipe everyone's tags/projects. The admin token keeps whole-state
+// semantics and never goes through this merge.
+func mergeSharedItems(storedRaw, incomingRaw json.RawMessage) json.RawMessage {
+	stored := splitTasks(storedRaw)
+	incoming := splitTasks(incomingRaw)
+	seen := map[string]struct{}{}
+	for _, raw := range stored {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) == nil && obj.ID != "" {
+			seen[obj.ID] = struct{}{}
+		}
+	}
+	result := append([]json.RawMessage{}, stored...)
+	for _, raw := range incoming {
+		var obj struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &obj) != nil || obj.ID == "" {
+			continue
+		}
+		if _, dup := seen[obj.ID]; dup {
+			continue
+		}
+		seen[obj.ID] = struct{}{}
+		result = append(result, raw)
+	}
+	return joinTasks(result)
+}
+
+// --- REST task API helpers (mirror server.mjs) ---
+
+)
 
 func nowISO() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -567,46 +1585,78 @@ func stringBodyField(body map[string]json.RawMessage, key string) (value *string
 // normalizeRepeatInput mirrors normalizeRepeat in model.ts; ok=false when
 // the value is not a repeat shape at all.
 func normalizeRepeatInput(raw json.RawMessage) (json.RawMessage, bool) {
-	var value struct {
-		Kind  string `json:"kind"`
-		Every int    `json:"every"`
-		Unit  string `json:"unit"`
-		Days  []int  `json:"days"`
-	}
-	if json.Unmarshal(raw, &value) != nil {
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil || value == nil {
 		return nil, false
 	}
-	switch value.Kind {
+	var kind string
+	if json.Unmarshal(value["kind"], &kind) != nil {
+		return nil, false
+	}
+	switch kind {
 	case "none", "daily", "weekdays", "weekly", "monthly":
-		return marshalField(map[string]string{"kind": value.Kind}), true
+		return marshalField(map[string]string{"kind": kind}), true
 	case "interval":
-		every := value.Every
-		if every < 1 {
-			every = 1
+		// The Node reference applies Number(), Math.floor(), and clamps to
+		// 1..99. Non-numeric input falls back to 1; strings and JSON floats
+		// should not make an otherwise valid repeat shape fail.
+		every := 1
+		var field any
+		if rawEvery, present := value["every"]; present {
+			_ = json.Unmarshal(rawEvery, &field)
 		}
-		if every > 99 {
-			every = 99
+		var number float64
+		switch v := field.(type) {
+		case float64:
+			number = v
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed != "" {
+				parsed, err := strconv.ParseFloat(trimmed, 64)
+				if err != nil {
+					parsed = 0
+				}
+				number = parsed
+			}
+		case bool:
+			if v {
+				number = 1
+			}
 		}
-		unit := value.Unit
+		if !math.IsNaN(number) {
+			if number >= 99 {
+				every = 99
+			} else if number > 1 {
+				every = int(math.Floor(number))
+			}
+		}
+		var unit string
+		_ = json.Unmarshal(value["unit"], &unit)
 		if unit != "week" && unit != "month" {
 			unit = "day"
 		}
 		return marshalField(map[string]any{"kind": "interval", "every": every, "unit": unit}), true
 	case "days":
-		rawDays, present := map[string]json.RawMessage{}, false
-		_ = json.Unmarshal(raw, &rawDays)
-		_, present = rawDays["days"]
-		if !present {
+		rawDays, present := value["days"]
+		if !present || !strings.HasPrefix(strings.TrimSpace(string(rawDays)), "[") {
+			return nil, false
+		}
+		var input []any
+		if json.Unmarshal(rawDays, &input) != nil {
 			return nil, false
 		}
 		seen := map[int]bool{}
 		days := []int{}
-		for _, day := range value.Days {
-			if day < 0 || day > 6 || seen[day] {
+		for _, candidate := range input {
+			number, numeric := candidate.(float64)
+			if !numeric || number < 0 || number > 6 || number != math.Trunc(number) {
 				continue
 			}
-			seen[day] = true
-			days = append(days, day)
+			day := int(number)
+			if !seen[day] {
+				seen[day] = true
+				days = append(days, day)
+			}
 		}
 		for i := 0; i < len(days); i++ {
 			for j := i + 1; j < len(days); j++ {
@@ -746,7 +1796,7 @@ func restPatchFromBody(body map[string]json.RawMessage) (map[string]json.RawMess
 	}
 	if raw, present := body["done"]; present {
 		var done bool
-		if json.Unmarshal(raw, &done) != nil {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &done) != nil {
 			return nil, "done must be a boolean"
 		}
 		patch["done"] = marshalField(done)
@@ -1443,7 +2493,7 @@ func countArray(raw json.RawMessage) int {
 }
 
 func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
-	requested := r.URL.Path
+	requested := r.URL.EscapedPath()
 	if requested == "/" {
 		requested = "/index.html"
 	}
@@ -1463,21 +2513,16 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 			if filepath.Base(filePath) == "index.html" {
 				w.Header().Set("X-Toduck-Server", "1")
 			}
-			if r.Method == http.MethodHead {
-				w.WriteHeader(http.StatusOK)
-				return true
-			}
-			http.ServeFile(w, r, filePath)
-			return true
+			return serveStaticFile(w, r, filePath)
 		}
 	}
 	fallback := filepath.Join(s.staticDir, "index.html")
-	decodedPath, decErr := url.PathUnescape(r.URL.Path)
+	decodedPath, decErr := url.PathUnescape(r.URL.EscapedPath())
 	if decErr != nil || strings.Contains(decodedPath, "..") {
 		http.Error(w, "invalid URL path", http.StatusBadRequest)
 		return true
 	}
-	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || strings.Contains(path.Base(decodedPath), ".")
+	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || staticAssetSuffixPattern.MatchString(r.URL.EscapedPath())
 	if assetRequest {
 		return false
 	}
@@ -1487,11 +2532,27 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Toduck-Server", "1")
-	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
-		return true
+	return serveStaticFile(w, r, fallback)
+}
+
+// Serve the complete content without net/http's ServeFile canonical redirect,
+// conditional 304s or automatic Range handling. The Node reference always
+// sends the full 200 response for both assets and the SPA shell.
+func serveStaticFile(w http.ResponseWriter, r *http.Request, filePath string) bool {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false
 	}
-	http.ServeFile(w, r, fallback)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, file)
+	}
 	return true
 }
 
