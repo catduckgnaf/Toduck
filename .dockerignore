@@ -4,3 +4,10 @@ node_modules
 dist
 screenshots
 android
+
+# Never send local secrets or preview data to the Docker build context.
+.env*
+**/.env*
+.preview
+**/.preview
+.node_modules.lock
