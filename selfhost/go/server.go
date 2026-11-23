@@ -1451,7 +1451,9 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	if ok {
 		if info, err := os.Stat(filePath); err == nil && info.Mode().IsRegular() {
 			cache := "no-cache"
-			if strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") {
+			// Only /assets/ contains content-hashed filenames. /__grok/
+			// has fixed names and must be revalidated after updates.
+			if strings.HasPrefix(r.URL.Path, "/assets/") {
 				cache = "public, max-age=31536000, immutable"
 			}
 			w.Header().Set("Cache-Control", cache)

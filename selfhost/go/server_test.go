@@ -216,6 +216,75 @@ func TestBodyLimitAndCORSAndHeaders(t *testing.T) {
 	}
 }
 
+func TestStaticCachePolicy(t *testing.T) {
+	server, dir := newTestServer(t)
+	defer server.Close()
+
+	if err := os.MkdirAll(filepath.Join(dir, "__grok", "install"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := []struct {
+		path, body, cache string
+	}{
+		{"/__grok/install/styles.css", "body { color: red; }", "no-cache"},
+		{"/__grok/icon-180.png", "fake-png", "no-cache"},
+		{"/assets/app.abc123.js", "console.log('ok');", "public, max-age=31536000, immutable"},
+		{"/", "<html>shell</html>", "no-cache"},
+	}
+	for _, file := range files {
+		name := strings.TrimPrefix(file.path, "/")
+		if file.path == "/" {
+			name = "index.html"
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(file.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, file := range files {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			t.Run(method + " " + file.path, func(t *testing.T) {
+				req, err := http.NewRequest(method, server.URL+file.path, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer res.Body.Close()
+				if res.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200", res.StatusCode)
+				}
+				if got := res.Header.Get("Cache-Control"); got != file.cache {
+					t.Errorf("Cache-Control = %q, want %q", got, file.cache)
+				}
+				body, err := io.ReadAll(res.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := file.body
+				if method == http.MethodHead {
+					want = ""
+				}
+				if string(body) != want {
+					t.Errorf("body = %q, want %q", body, want)
+				}
+			})
+		}
+	}
+	res, err := http.Get(server.URL + "/__grok/missing.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing Grok asset status = %d, want 404", res.StatusCode)
+	}
+}
+
 func TestConcurrentAndRecovery(t *testing.T) {
 	server, dir := newTestServer(t)
 	defer server.Close()
