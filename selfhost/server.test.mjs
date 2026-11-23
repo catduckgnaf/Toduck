@@ -911,3 +911,42 @@ test("CORS and origin checks never stand in for authentication", async () => {
     { allowedOrigins: ["https://allowed.example"] },
   );
 });
+
+test("malformed URLs and null state body return errors without killing the Node server (#56)", async () => {
+  await withServer(async ({ url }) => {
+    const target = new URL(url);
+    const raw = (path, method = "GET", headers = {}) => new Promise((resolve, reject) => {
+      const req = httpRequest({
+        hostname: target.hostname,
+        port: target.port,
+        method,
+        path,
+        headers,
+      }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve({ status: res.statusCode, body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+
+    for (const path of ["/%zz", "//["]) {
+      const response = await raw(path);
+      assert.equal(response.status, 400, path);
+      assert.equal(JSON.parse(response.body).error, "Invalid request");
+      assert.equal((await fetch(`${url}/health`)).status, 200);
+    }
+    const invalidId = await raw("/v1/tasks/%zz", "PATCH", auth({ "Content-Type": "application/json" }));
+    assert.equal(invalidId.status, 400);
+    const badState = await fetch(`${url}/v1/state`, {
+      method: "PUT",
+      headers: auth({ "Content-Type": "application/json", "If-Match": '"0"' }),
+      body: "null",
+    });
+    assert.equal(badState.status, 400);
+    assert.match((await badState.text()), /Expected tasks and categories arrays/);
+    assert.equal((await fetch(`${url}/health`)).status, 200);
+  });
+});
