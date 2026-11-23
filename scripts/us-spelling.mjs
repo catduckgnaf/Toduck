@@ -40,13 +40,16 @@ function replacement(found) {
 }
 
 export function lineViolations(text) {
-  const allow = text.match(/<!--\s*us-spelling:\s*allow\b(.*?)-->/i);
-  const words = allow ? [...allow[1].matchAll(/[A-Za-z]+/g)].map((word) => word[0].toLowerCase()) : [];
-  if (allow && words.length === 0) return [];
-  const prose = text.replace(/<!--.*?-->/g, "");
   const found = [];
-  for (const match of prose.matchAll(pattern)) {
-    if (!words.includes(match[0].toLowerCase())) found.push([match[0], replacement(match[0])]);
+  // Each spelling exception applies only to its own line.
+  for (const rawLine of String(text).split(/\r?\n/)) {
+    const allow = rawLine.match(/<!--\s*us-spelling:\s*allow\b(.*?)-->/i);
+    const words = allow ? [...allow[1].matchAll(/[A-Za-z]+/g)].map((word) => word[0].toLowerCase()) : [];
+    if (allow && words.length === 0) continue;
+    const prose = rawLine.replace(/<!--.*?-->/g, "");
+    for (const match of prose.matchAll(pattern)) {
+      if (!words.includes(match[0].toLowerCase())) found.push([match[0], replacement(match[0])]);
+    }
   }
   return found;
 }
@@ -55,20 +58,30 @@ export function diffViolations(diffText) {
   const found = [];
   let path = null;
   let line = 0;
+  let inHunk = false;
   for (const raw of diffText.split("\n")) {
-    if (raw.startsWith("+++")) {
-      const target = raw.slice(4).trim().replace(/^b\//, "");
+    if (raw.startsWith("diff --git ")) {
+      path = null;
+      inHunk = false;
+      continue;
+    }
+    // File headers occur before hunks; an added Markdown line may also begin "+++".
+    if (!inHunk && raw.startsWith("+++ b/")) {
+      const target = raw.slice(6).trim();
       path = target.endsWith(".md") ? target : null;
       continue;
     }
     const hunk = raw.match(/^@@ -\d+(?:,\d+)? \+(\d+)/);
     if (hunk) {
       line = Number(hunk[1]);
+      inHunk = true;
       continue;
     }
-    if (!path) continue;
+    if (!inHunk || !path) continue;
     if (raw.startsWith("+")) {
-      for (const [word, next] of lineViolations(raw.slice(1))) found.push(`${path}:${line}: British spelling '${word}' -- use '${next}' instead`);
+      for (const [word, next] of lineViolations(raw.slice(1))) {
+        found.push(path + ":" + line + ": British spelling '" + word + "' -- use '" + next + "' instead");
+      }
       line += 1;
     } else if (!raw.startsWith("-") && !raw.startsWith("\\")) {
       line += 1;
