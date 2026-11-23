@@ -52,7 +52,7 @@ function fieldContent(text, label) {
 function hasSubstance(value, minimumLength) {
   const prose = value
     .replace(/^[ \t]*[-*+][ \t]+/gm, " ")
-    .replace(/[\`*_>#~]/g, " ")
+    .replace(/[`*_>#~]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (/^(?:todo|tbd|placeholder)\b/i.test(prose)) return false;
