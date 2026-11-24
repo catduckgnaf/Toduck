@@ -1302,3 +1302,17 @@ func TestCrossOriginAndPreflightNeverGrantAccess(t *testing.T) {
 		t.Fatalf("foreign origin on unknown path status %d, want 403", res.StatusCode)
 	}
 }
+
+func TestHTTPServerTimeouts(t *testing.T) {
+	handler := http.NewServeMux()
+	server := newHTTPServer("127.0.0.1:8787", handler)
+	if server.Addr != "127.0.0.1:8787" || server.Handler != handler {
+		t.Fatal("server address or handler was not preserved")
+	}
+	if server.ReadHeaderTimeout != httpReadHeaderTimeout || server.ReadTimeout != httpReadTimeout || server.IdleTimeout != httpIdleTimeout {
+		t.Fatalf("unexpected HTTP timeouts: header=%v read=%v idle=%v", server.ReadHeaderTimeout, server.ReadTimeout, server.IdleTimeout)
+	}
+	if server.ReadHeaderTimeout <= 0 || server.ReadTimeout <= 0 || server.IdleTimeout <= 0 {
+		t.Fatal("HTTP server must bound header, read and idle time")
+	}
+}

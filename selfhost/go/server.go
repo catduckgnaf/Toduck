@@ -26,6 +26,24 @@ import (
 
 const defaultMaxBody = 1_500_000
 
+// Bound unauthenticated slow requests and keep-alive connections so they
+// cannot indefinitely occupy server goroutines and file descriptors.
+const (
+	httpReadHeaderTimeout = 10 * time.Second
+	httpReadTimeout       = 30 * time.Second
+	httpIdleTimeout       = 60 * time.Second
+)
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		IdleTimeout:       httpIdleTimeout,
+	}
+}
+
 // 'unsafe-inline' in script-src is required: the built Web UI's index.html
 // carries first-party inline bootstrap scripts (TanStack Start hydration).
 // Without it the served app renders blank. Keep in sync with server.mjs.
@@ -1580,5 +1598,5 @@ func main() {
 	}
 	handler := newServer(config{token: os.Getenv("TODUCK_TOKEN"), dataPath: dataPath, staticDir: staticDir, allowedOrigins: origins})
 	log.Printf("Toduck server listening on %s", port)
-	log.Fatal(http.ListenAndServe("0.0.0.0:"+port, handler))
+	log.Fatal(newHTTPServer("0.0.0.0:"+port, handler).ListenAndServe())
 }
