@@ -109,3 +109,10 @@ test("accepts real multiline verification results", () => {
   const detailed = body.replace("- Checks run: npm test", "- Checks run:\n- npm test\n- npm run lint");
   assert.deepEqual(checkPullRequest({ body: detailed, files: [] }), []);
 });
+
+test("rejects conflicting or repeated documentation decisions", () => {
+  for (const second of ["Documentation: updated", "- Documentation: not needed", "documentation:"]) {
+    const duplicate = body + second + "\n";
+    assert.ok(checkPullRequest({ body: duplicate, files: ["README.md"] }).some((error) => /choose exactly/i.test(error)));
+  }
+});

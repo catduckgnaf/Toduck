@@ -80,8 +80,8 @@ export function checkPullRequest({ body = "", files = [] }) {
   }
 
   // The untouched template offers both options; the author must select one.
-  const docLine = text.match(/^[ \t]*(?:[-*][ \t]+)?Documentation:[ \t]*(.*)$/im);
-  const decision = docLine?.[1].trim().toLowerCase();
+  const docLines = [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?Documentation:[ \t]*(.*)$/gim)];
+  const decision = docLines.length === 1 ? docLines[0][1].trim().toLowerCase() : undefined;
   if (decision !== "updated" && decision !== "not needed") {
     errors.push("Documentation: choose exactly 'updated' or 'not needed'.");
   } else if (decision === "updated" && !files.some((file) => file.endsWith(".md"))) {
