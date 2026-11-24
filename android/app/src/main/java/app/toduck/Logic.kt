@@ -3,6 +3,7 @@ package app.toduck
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
+import java.util.GregorianCalendar
 import java.util.Locale
 import java.util.UUID
 
@@ -52,14 +53,17 @@ data class Doc(
     val projects: List<Project> = emptyList(),
 )
 
-fun todayKey(): String = toKey(Calendar.getInstance())
+fun todayKey(): String = toKey(GregorianCalendar(Locale.ROOT))
 
-fun toKey(c: Calendar): String =
-    String.format(Locale.ROOT, "%04d-%02d-%02d", c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+fun toKey(c: Calendar): String {
+    val date = GregorianCalendar(c.timeZone, Locale.ROOT).apply { timeInMillis = c.timeInMillis }
+    return String.format(Locale.ROOT, "%04d-%02d-%02d", date.get(Calendar.YEAR), date.get(Calendar.MONTH) + 1, date.get(Calendar.DAY_OF_MONTH))
+}
 
 fun parseKey(key: String): Calendar {
     val p = key.split("-")
-    return Calendar.getInstance().apply {
+    return GregorianCalendar(Locale.ROOT).apply {
+        clear()
         set(Calendar.YEAR, p[0].toInt())
         set(Calendar.MONTH, p[1].toInt() - 1)
         set(Calendar.DAY_OF_MONTH, p[2].toInt())
@@ -82,7 +86,7 @@ fun daysBetween(a: String, b: String): Int =
     Math.round((parseKey(b).timeInMillis - parseKey(a).timeInMillis) / 86_400_000.0).toInt()
 
 private fun daysInMonth(c: Calendar): Int =
-    Calendar.getInstance().apply {
+    GregorianCalendar(c.timeZone, Locale.ROOT).apply {
         timeInMillis = c.timeInMillis
         set(Calendar.DAY_OF_MONTH, 1)
         add(Calendar.MONTH, 1)
