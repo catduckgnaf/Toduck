@@ -566,6 +566,44 @@ func stringBodyField(body map[string]json.RawMessage, key string) (value *string
 	return &text, true, true
 }
 
+var jsDecimalNumber = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
+var jsHexNumber = regexp.MustCompile(`^0[xX][0-9a-fA-F]+$`)
+var jsOctalNumber = regexp.MustCompile(`^0[oO][0-7]+$`)
+var jsBinaryNumber = regexp.MustCompile(`^0[bB][01]+$`)
+
+// jsNumericString follows the Number() string grammar used by the Node server.
+func jsNumericString(value string) float64 {
+	value = strings.Trim(value, "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
+	switch value {
+	case "":
+		return 0
+	case "Infinity", "+Infinity":
+		return math.Inf(1)
+	case "-Infinity":
+		return math.Inf(-1)
+	}
+	base := 0
+	switch {
+	case jsHexNumber.MatchString(value):
+		base = 16
+	case jsOctalNumber.MatchString(value):
+		base = 8
+	case jsBinaryNumber.MatchString(value):
+		base = 2
+	}
+	if base != 0 {
+		// The grammar above rejects malformed digits; overflow is still
+		// a positive number and will be clamped to the maximum interval.
+		number, _ := strconv.ParseUint(value[2:], base, 64)
+		return float64(number)
+	}
+	if !jsDecimalNumber.MatchString(value) {
+		return math.NaN()
+	}
+	number, _ := strconv.ParseFloat(value, 64)
+	return number
+}
+
 // normalizeRepeatInput mirrors normalizeRepeat in model.ts; ok=false when
 // the value is not a repeat shape at all.
 func normalizeRepeatInput(raw json.RawMessage) (json.RawMessage, bool) {
@@ -594,14 +632,7 @@ func normalizeRepeatInput(raw json.RawMessage) (json.RawMessage, bool) {
 		case float64:
 			number = v
 		case string:
-			trimmed := strings.TrimSpace(v)
-			if trimmed != "" {
-				parsed, err := strconv.ParseFloat(trimmed, 64)
-				if err != nil {
-					parsed = 0
-				}
-				number = parsed
-			}
+			number = jsNumericString(v)
 		case bool:
 			if v {
 				number = 1

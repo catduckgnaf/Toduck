@@ -64,6 +64,15 @@ async function sampleContract(url) {
     ['{"title":"Float","repeat":{"kind":"interval","every":2.0}}', { kind: "interval", every: 2, unit: "day" }],
     ['{"title":"String","repeat":{"kind":"interval","every":"3"}}', { kind: "interval", every: 3, unit: "day" }],
     ['{"title":"Coerce","repeat":{"kind":"interval","every":"1000","unit":"week"}}', { kind: "interval", every: 99, unit: "week" }],
+    ...[
+      ["0x10", 16], ["0XFF", 99], ["0b101", 5], ["0o17", 15],
+      ["  3.9e1  ", 39], ["Infinity", 99], ["1e999", 99],
+      ["0x100000000000000000000", 99], ["0xG", 1],
+      ["+0x10", 1], ["0b102", 1], ["1_0", 1], ["Inf", 1], ["0x1p4", 1],
+    ].map(([every, expected]) => [
+      JSON.stringify({ title: "Numeric string", repeat: { kind: "interval", every } }),
+      { kind: "interval", every: expected, unit: "day" },
+    ]),
     ['{"title":"Days","repeat":{"kind":"days","days":[1,2.5,"3",3,1,7,-1]}}', { kind: "days", days: [1, 3] }],
   ];
   const result = [];
