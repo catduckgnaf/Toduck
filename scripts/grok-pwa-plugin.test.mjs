@@ -443,6 +443,26 @@ test("filters non-document paths", () => {
   assert.equal(isDocumentPath("/logo.png"), false);
 });
 
+test("rejects protocol-relative and backslash install paths", () => {
+  const invalid = [
+    "//evil.example/",
+    "///evil.example/path",
+    "/\\evil.example/",
+    "/app\\elsewhere",
+    "/%5cevil.example/",
+    "https://evil.example/",
+    "app",
+  ];
+  for (const path of invalid) {
+    assert.equal(isDocumentPath(path), false, path);
+    assert.equal(stripInstallParams(`${path}?install=1&platform=ios`), "/", path);
+    const html = renderInstallPage("wild-race.grok.me", `${path}?install=1&platform=ios`);
+    assert.match(html, /href="\/"/);
+    assert.doesNotMatch(html, /href="\/\/evil\.example/);
+  }
+  assert.equal(isDocumentPath("/safe/page"), true);
+});
+
 test("strips install params from the app link", () => {
   assert.equal(stripInstallParams("/?install=1&platform=ios"), "/");
   assert.equal(stripInstallParams("/app?install=1&platform=ios&tab=2"), "/app?tab=2");
