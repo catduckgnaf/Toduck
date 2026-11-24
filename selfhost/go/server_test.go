@@ -1304,9 +1304,9 @@ func TestCrossOriginAndPreflightNeverGrantAccess(t *testing.T) {
 }
 
 func TestHTTPServerTimeouts(t *testing.T) {
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	handler := http.NewServeMux()
 	server := newHTTPServer("127.0.0.1:8787", handler)
-	if server.Addr != "127.0.0.1:8787" || server.Handler == nil {
+	if server.Addr != "127.0.0.1:8787" || server.Handler != handler {
 		t.Fatal("server address or handler was not preserved")
 	}
 	if server.ReadHeaderTimeout != httpReadHeaderTimeout || server.ReadTimeout != httpReadTimeout || server.IdleTimeout != httpIdleTimeout {
