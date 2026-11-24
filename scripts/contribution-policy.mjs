@@ -38,7 +38,7 @@ export function checkPullRequest({ body = "", files = [] }) {
       if (/^[ \t]*(?:##[ \t]+|-?[ \t]*Checks not run(?: and why)?:|Documentation:|Reason:)/i.test(lines[i])) break;
       evidence.push(lines[i]);
     }
-    if (evidence.join(" ").replace(/[\s\-*\[\]]/g, "").length < 5) {
+    if (evidence.join(" ").replace(/[\s*[\]-]/g, "").length < 5) {
       errors.push("Pull request needs verification evidence under 'Checks run:'.");
     }
   }
