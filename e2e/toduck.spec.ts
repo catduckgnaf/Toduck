@@ -274,6 +274,15 @@ test("repeat interval can be cleared while typing, then normalizes on blur", asy
   await expect(interval).toHaveValue("150");
   await interval.press("Tab");
   await expect(interval).toHaveValue("99");
+  for (const malformed of ["5x", "2.5", "1e2"]) {
+    await interval.fill("7");
+    await interval.press("Tab");
+    await expect(interval).toHaveValue("7");
+    await interval.fill(malformed);
+    await expect(interval).toHaveValue(malformed);
+    await interval.press("Tab");
+    await expect(interval).toHaveValue("1");
+  }
   await interval.fill("");
   await expect(interval).toHaveValue("");
   await interval.press("Tab");

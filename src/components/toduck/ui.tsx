@@ -251,7 +251,7 @@ function IntervalEveryInput({
   useEffect(() => setDraft(String(every)), [every]);
 
   const commit = () => {
-    const entered = Number.parseInt(draft, 10);
+    const entered = /^[+-]?\d+$/.test(draft.trim()) ? Number(draft.trim()) : NaN;
     const normalized = Math.min(99, Math.max(1, Number.isFinite(entered) ? entered : 1));
     setDraft(String(normalized));
     if (normalized !== every) onChange({ kind: "interval", every: normalized, unit });
