@@ -5,6 +5,10 @@ import java.io.InputStreamReader
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.util.Calendar
+import java.util.GregorianCalendar
+import java.util.Locale
+import java.util.TimeZone
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -83,6 +87,35 @@ class SyncTest {
 
         fun putRevisions(): List<String> = synchronized(lock) { puts.toList() }
         override fun close() { socket.close(); thread.join(1000) }
+    }
+
+    @Test fun dateKeysUseAsciiDigitsRegardlessOfDeviceLocale() {
+        val prior = Locale.getDefault()
+        val date = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.US).apply {
+            set(2026, Calendar.NOVEMBER, 23, 12, 0, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        try {
+            for (languageTag in listOf("ar-EG", "fa-IR", "th-TH-u-ca-buddhist", "ja-JP-u-ca-japanese")) {
+                Locale.setDefault(Locale.forLanguageTag(languageTag))
+                assertEquals("2026-11-23", toKey(date))
+                assertEquals("2026-11-24", addDays("2026-11-23", 1))
+                assertEquals("2024-02-29", addDays("2024-02-28", 1))
+                assertEquals("2024-03-01", addDays("2024-02-29", 1))
+                assertEquals("2026-11-23", toKey(parseKey("2026-11-23")))
+                assertTrue(parseKey("2026-11-23") is GregorianCalendar)
+                val localized = Calendar.getInstance(TimeZone.getTimeZone("UTC"), Locale.getDefault()).apply {
+                    timeInMillis = date.timeInMillis
+                }
+                assertEquals("2026-11-23", toKey(localized))
+                val before = toKey(GregorianCalendar())
+                val today = todayKey()
+                val after = toKey(GregorianCalendar())
+                assertTrue(today == before || today == after)
+            }
+        } finally {
+            Locale.setDefault(prior)
+        }
     }
 
     @Test fun revisionAwareSyncUsesServerRevisionAndMerges() {
