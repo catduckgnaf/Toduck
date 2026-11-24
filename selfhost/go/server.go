@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"net/url"
@@ -506,6 +507,7 @@ func mergeSharedItems(storedRaw, incomingRaw json.RawMessage) json.RawMessage {
 // --- REST task API helpers (mirror server.mjs) ---
 
 var dateKeyPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+var staticAssetSuffixPattern = regexp.MustCompile(`(?i)\.[a-z0-9]+$`)
 
 func nowISO() string {
 	return time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -564,49 +566,112 @@ func stringBodyField(body map[string]json.RawMessage, key string) (value *string
 	return &text, true, true
 }
 
+var jsDecimalNumber = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
+var jsHexNumber = regexp.MustCompile(`^0[xX][0-9a-fA-F]+$`)
+var jsOctalNumber = regexp.MustCompile(`^0[oO][0-7]+$`)
+var jsBinaryNumber = regexp.MustCompile(`^0[bB][01]+$`)
+
+// jsNumericString follows the Number() string grammar used by the Node server.
+func jsNumericString(value string) float64 {
+	value = strings.Trim(value, "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
+	switch value {
+	case "":
+		return 0
+	case "Infinity", "+Infinity":
+		return math.Inf(1)
+	case "-Infinity":
+		return math.Inf(-1)
+	}
+	base := 0
+	switch {
+	case jsHexNumber.MatchString(value):
+		base = 16
+	case jsOctalNumber.MatchString(value):
+		base = 8
+	case jsBinaryNumber.MatchString(value):
+		base = 2
+	}
+	if base != 0 {
+		// The grammar above rejects malformed digits; overflow is still
+		// a positive number and will be clamped to the maximum interval.
+		number, _ := strconv.ParseUint(value[2:], base, 64)
+		return float64(number)
+	}
+	if !jsDecimalNumber.MatchString(value) {
+		return math.NaN()
+	}
+	number, _ := strconv.ParseFloat(value, 64)
+	return number
+}
+
 // normalizeRepeatInput mirrors normalizeRepeat in model.ts; ok=false when
 // the value is not a repeat shape at all.
 func normalizeRepeatInput(raw json.RawMessage) (json.RawMessage, bool) {
-	var value struct {
-		Kind  string `json:"kind"`
-		Every int    `json:"every"`
-		Unit  string `json:"unit"`
-		Days  []int  `json:"days"`
-	}
-	if json.Unmarshal(raw, &value) != nil {
+	var value map[string]json.RawMessage
+	if json.Unmarshal(raw, &value) != nil || value == nil {
 		return nil, false
 	}
-	switch value.Kind {
+	var kind string
+	if json.Unmarshal(value["kind"], &kind) != nil {
+		return nil, false
+	}
+	switch kind {
 	case "none", "daily", "weekdays", "weekly", "monthly":
-		return marshalField(map[string]string{"kind": value.Kind}), true
+		return marshalField(map[string]string{"kind": kind}), true
 	case "interval":
-		every := value.Every
-		if every < 1 {
-			every = 1
+		// The Node reference applies Number(), Math.floor(), and clamps to
+		// 1..99. Non-numeric input falls back to 1; strings and JSON floats
+		// should not make an otherwise valid repeat shape fail.
+		every := 1
+		var field any
+		if rawEvery, present := value["every"]; present {
+			_ = json.Unmarshal(rawEvery, &field)
 		}
-		if every > 99 {
-			every = 99
+		var number float64
+		switch v := field.(type) {
+		case float64:
+			number = v
+		case string:
+			number = jsNumericString(v)
+		case bool:
+			if v {
+				number = 1
+			}
 		}
-		unit := value.Unit
+		if !math.IsNaN(number) {
+			if number >= 99 {
+				every = 99
+			} else if number > 1 {
+				every = int(math.Floor(number))
+			}
+		}
+		var unit string
+		_ = json.Unmarshal(value["unit"], &unit)
 		if unit != "week" && unit != "month" {
 			unit = "day"
 		}
 		return marshalField(map[string]any{"kind": "interval", "every": every, "unit": unit}), true
 	case "days":
-		rawDays, present := map[string]json.RawMessage{}, false
-		_ = json.Unmarshal(raw, &rawDays)
-		_, present = rawDays["days"]
-		if !present {
+		rawDays, present := value["days"]
+		if !present || !strings.HasPrefix(strings.TrimSpace(string(rawDays)), "[") {
+			return nil, false
+		}
+		var input []any
+		if json.Unmarshal(rawDays, &input) != nil {
 			return nil, false
 		}
 		seen := map[int]bool{}
 		days := []int{}
-		for _, day := range value.Days {
-			if day < 0 || day > 6 || seen[day] {
+		for _, candidate := range input {
+			number, numeric := candidate.(float64)
+			if !numeric || number < 0 || number > 6 || number != math.Trunc(number) {
 				continue
 			}
-			seen[day] = true
-			days = append(days, day)
+			day := int(number)
+			if !seen[day] {
+				seen[day] = true
+				days = append(days, day)
+			}
 		}
 		for i := 0; i < len(days); i++ {
 			for j := i + 1; j < len(days); j++ {
@@ -746,7 +811,7 @@ func restPatchFromBody(body map[string]json.RawMessage) (map[string]json.RawMess
 	}
 	if raw, present := body["done"]; present {
 		var done bool
-		if json.Unmarshal(raw, &done) != nil {
+		if strings.TrimSpace(string(raw)) == "null" || json.Unmarshal(raw, &done) != nil {
 			return nil, "done must be a boolean"
 		}
 		patch["done"] = marshalField(done)
@@ -1443,7 +1508,7 @@ func countArray(raw json.RawMessage) int {
 }
 
 func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
-	requested := r.URL.Path
+	requested := r.URL.EscapedPath()
 	if requested == "/" {
 		requested = "/index.html"
 	}
@@ -1463,21 +1528,16 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 			if filepath.Base(filePath) == "index.html" {
 				w.Header().Set("X-Toduck-Server", "1")
 			}
-			if r.Method == http.MethodHead {
-				w.WriteHeader(http.StatusOK)
-				return true
-			}
-			http.ServeFile(w, r, filePath)
-			return true
+			return serveStaticFile(w, r, filePath)
 		}
 	}
 	fallback := filepath.Join(s.staticDir, "index.html")
-	decodedPath, decErr := url.PathUnescape(r.URL.Path)
+	decodedPath, decErr := url.PathUnescape(r.URL.EscapedPath())
 	if decErr != nil || strings.Contains(decodedPath, "..") {
 		http.Error(w, "invalid URL path", http.StatusBadRequest)
 		return true
 	}
-	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || strings.Contains(path.Base(decodedPath), ".")
+	assetRequest := strings.HasPrefix(r.URL.Path, "/assets/") || strings.HasPrefix(r.URL.Path, "/__grok/") || staticAssetSuffixPattern.MatchString(r.URL.EscapedPath())
 	if assetRequest {
 		return false
 	}
@@ -1487,11 +1547,27 @@ func (s *server) serveStatic(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Toduck-Server", "1")
-	if r.Method == http.MethodHead {
-		w.WriteHeader(http.StatusOK)
-		return true
+	return serveStaticFile(w, r, fallback)
+}
+
+// Serve the complete content without net/http's ServeFile canonical redirect,
+// conditional 304s or automatic Range handling. The Node reference always
+// sends the full 200 response for both assets and the SPA shell.
+func serveStaticFile(w http.ResponseWriter, r *http.Request, filePath string) bool {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return false
 	}
-	http.ServeFile(w, r, fallback)
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = io.Copy(w, file)
+	}
 	return true
 }
 
