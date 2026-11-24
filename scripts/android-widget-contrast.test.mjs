@@ -23,9 +23,8 @@ test("all five Android widget task titles meet WCAG normal-text contrast", () =>
   const bg = background.match(/<solid\b[^>]*android:color="(#[0-9A-Fa-f]{6})"/)?.[1];
   assert.ok(bg, "widget background color must be present");
   const titles = [...layout.matchAll(/<TextView\b[^>]*android:id="@\+id\/title(\d)"[^>]*\/>/g)];
-  assert.equal(titles.length, 5, "the five widget task rows must be covered");
-  for (const [, index, ] of titles) {
-    const xml = titles.find((match) => match[1] === index)?.[0] ?? "";
+  assert.deepEqual(titles.map((match) => match[1]).sort(), ["0", "1", "2", "3", "4"], "each widget title ID must occur exactly once");
+  for (const [xml, index] of titles) {
     const color = xml.match(/android:textColor="(#[0-9A-Fa-f]{6})"/)?.[1];
     assert.ok(color, "title" + index + " must declare a readable text color");
     assert.ok(
